@@ -16,40 +16,48 @@ def generate_datasets(filename, cuts):
 
     # Cargar los datos desde el archivo .data
     print(f"Procesando archivo: {filename}")
-    X, Y, block_ids = load_data_from_file(filename)
+    X_src, X_tgt, Y, ids = load_data_from_file(filename)
 
     # Crear un diccionario para almacenar los datasets
-    datasets = {i: {"X": [], "Y": [], "block_ids": []} for i in range(1, len(cuts))}
+    datasets = {i: {"X_src": [], "X_tgt": [], "Y": [], "ids": []} for i in range(1, len(cuts))}
 
     # Separar los datos según los cortes
     for i, y_vector in enumerate(Y):
         pos = y_vector.index(1)  # Encontrar la posición del 1 en el vector one-hot
 
         # Asignar el dato al dataset correspondiente según el corte
-        for j in range(len(cuts)-1):
-            if pos < cuts[j+1]:
-                datasets[j + 1]["X"].append(X[i])
+        for j in range(len(cuts) - 1):
+            if pos < cuts[j + 1]:
+                datasets[j + 1]["X_src"].append(X_src[i])
+                datasets[j + 1]["X_tgt"].append(X_tgt[i])
                 datasets[j + 1]["Y"].append(Y[i])
-                datasets[j + 1]["block_ids"].append(block_ids[i])
+                datasets[j + 1]["ids"].append(ids[i])
                 break  # Una vez asignado, salir del loop de cortes
 
     # Guardar cada dataset en un archivo
     for i, dataset in datasets.items():
-        # Generar el nombre del archivo con base en el corte
-        start_cut = cuts[i-1] + 1 if i > 1 else 1
-        end_cut = cuts[i]  # Cortes entre `cuts[i-1]` y `cuts[i]`
+        start_cut = cuts[i - 1] + 1 if i > 1 else 1
+        end_cut = cuts[i]
 
-        output_filename = f"{start_cut}-{end_cut}.data"
+        output_filename = f"{filename.split('.')[0]}_{start_cut}-{end_cut}.data"
         output_file_path = os.path.join(output_path, output_filename)
 
-        # Guardar el dataset en el archivo
+        # Guardar el dataset en el archivo con las nuevas claves
         with open(output_file_path, "wb") as f:
-            pickle.dump({"X": dataset["X"], "Y": dataset["Y"], "block_ids": dataset["block_ids"]}, f)
+            pickle.dump(
+                {
+                    "X_src": dataset["X_src"],
+                    "X_tgt": dataset["X_tgt"],
+                    "Y": dataset["Y"],
+                    "ids": dataset["ids"],
+                },
+                f,
+            )
 
         print(f"Dataset guardado en: {output_file_path}")
 
 
-def remove_elements_with_zero(X, Y, blocks_ids):
+def remove_elements_with_zero(X_src, X_tgt, Y, blocks_ids):
     # Crear una lista de índices a eliminar
     indices_to_remove = []
 
@@ -59,11 +67,12 @@ def remove_elements_with_zero(X, Y, blocks_ids):
             indices_to_remove.append(idx)
 
     # Eliminar los elementos en X, Y y blocks_ids correspondientes a los índices encontrados
-    X_filtered = [x for i, x in enumerate(X) if i not in indices_to_remove]
+    X_src_filtered = [x for i, x in enumerate(X_src) if i not in indices_to_remove]
+    X_tgt_filtered = [x for i, x in enumerate(X_tgt) if i not in indices_to_remove]
     Y_filtered = [y for i, y in enumerate(Y) if i not in indices_to_remove]
     blocks_ids_filtered = [block for i, block in enumerate(blocks_ids) if i not in indices_to_remove]
 
-    return X_filtered, Y_filtered, blocks_ids_filtered
+    return X_src_filtered, X_tgt_filtered, Y_filtered, blocks_ids_filtered
 
 
 def remove_elements_with_less_blocks(X, Y, blocks_ids, min_blocks=10000):

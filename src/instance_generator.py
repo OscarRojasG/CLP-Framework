@@ -1,6 +1,9 @@
 import random
-from CLP import BoxType, CLPInstance
+from .CLP import BoxType, CLPInstance
+import os
 
+
+output_folder = "instances/"
 
 def instance(n_types=10, seed=None):
     """
@@ -67,7 +70,11 @@ def gen_instances(filename, n_instances=100, n_types=10, seed=None):
     """
     Genera un archivo con varias instancias CLP en el formato definido.
     """
-    with open(filename, "w") as f:
+    # Asegurarse de que la carpeta de salida exista
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    with open(output_folder + filename, "w") as f:
         # número total de instancias
         f.write(str(n_instances) + "\n")
 

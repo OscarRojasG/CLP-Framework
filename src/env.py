@@ -37,7 +37,7 @@ class State:
     def get_volume_ratio(self):
         if self.total_volume == 0:
             return 0.0
-        return self.occupied_volume / self.total_volume
+        return (self.occupied_volume / self.total_volume) * 100
     
 class Action:
     def __init__(self, block_id, action_vec):
@@ -53,7 +53,7 @@ class Environment:
         # Crear proceso persistente
         process = subprocess.Popen(
             [
-                "./../Metasolver/BSG_ENV",
+                "./BSG_ENV",
                 f"instances/{instance_file}",
                 "-i", str(instance_number),
                 "-w", str(w)
@@ -113,7 +113,7 @@ class Environment:
         return actions
 
     @staticmethod
-    def state_transition(state: State, action: 'Action'):
+    def state_transition(state: State, action: Action):
         """
         Envía una acción al proceso para realizar la transición de estado.
         """

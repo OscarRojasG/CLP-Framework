@@ -1,16 +1,13 @@
 import random
 from .CLP import BoxType, CLPInstance
 import os
+from . import settings
 
-
-output_folder = "instances/"
-
-def instance(n_types=10, seed=None):
+def instance(n_types=10, seed=42):
     """
     Genera una sola instancia del CLP como objeto CLPInstance.
     """
-    if seed is not None:
-        random.seed(seed)
+    random.seed(seed)
 
     # Dimensiones del contenedor (fijas en este caso)
     l, w, h = 587, 233, 220
@@ -66,20 +63,22 @@ def instance(n_types=10, seed=None):
     return CLPInstance(container=(l, w, h), boxes=boxes)
 
 
-def gen_instances(filename, n_instances=100, n_types=10, seed=None):
+def gen_instances(filename, n_instances=100, n_types=10, seed=42):
     """
     Genera un archivo con varias instancias CLP en el formato definido.
     """
     # Asegurarse de que la carpeta de salida exista
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    os.makedirs(settings.instance_folder_path, exist_ok=True)
 
-    with open(output_folder + filename, "w") as f:
+    # Fijar semilla generadora de números aleatorios
+    random.seed(seed)
+
+    with open(settings.instance_folder_path+filename, "w") as f:
         # número total de instancias
         f.write(str(n_instances) + "\n")
 
         for inst_id in range(1, n_instances + 1):
-            inst = instance(n_types=n_types, seed=(seed + inst_id) if seed is not None else None)
+            inst = instance(n_types=n_types, seed=random.random())
 
             # encabezado de la instancia
             f.write(f"{inst_id}\n")

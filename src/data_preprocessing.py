@@ -54,7 +54,7 @@ def generate_datasets(filename, cuts):
                 f,
             )
 
-        print(f"Dataset guardado en: {output_file_path}")
+        print(f"Dataset guardado en: {output_file_path} (Tamaño {len(dataset['X_src'])})")
 
 
 def remove_elements_with_zero(X_src, X_tgt, Y, blocks_ids):

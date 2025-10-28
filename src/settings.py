@@ -1,1 +1,6 @@
 instance_folder_path = "instances/"
+output_folder_path = "outputs/"
+data_folder_path = "data/"
+models_folder_path = "models/"
+bsg_solver_path = "./BSG_CLP"
+env_path = "./BSG_ENV"

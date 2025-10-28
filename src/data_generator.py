@@ -1,16 +1,16 @@
 import subprocess
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import re
 import pickle
+from . import settings
 
 
-instance_folder = "instances/"
 output_folder = "outputs/"
 data_folder = "data/"
 
 
-def run_instance(exe_path, file_path, i, w, base_folder=None):
+def run_instance(file_path, i, w, base_folder=None):
     """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Asegurarse de que la carpeta de salida exista
@@ -30,7 +30,7 @@ def run_instance(exe_path, file_path, i, w, base_folder=None):
 
     # Ejecutar el proceso y capturar la salida
     proc = subprocess.run(
-        [exe_path, instance_folder+file_path, "-i", str(i), "-w", str(w), f"--verbose2={str(w*w)}"],
+        [settings.bsg_solver_path, settings.instance_folder_path+file_path, "-i", str(i), "-w", str(w), f"--verbose2={str(w*w)}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=True,
@@ -42,9 +42,9 @@ def run_instance(exe_path, file_path, i, w, base_folder=None):
         f.write(proc.stdout)
 
 
-def run_file_instances_parallel(exe_path, file_path, w=8, max_workers=None):
+def run_file_instances_parallel(file_path, w=8, max_workers=None):
     # Leer número de instancias
-    with open(instance_folder + file_path, "r") as f:
+    with open(settings.instance_folder_path+file_path, "r") as f:
         num_instances = int(f.readline().strip())
 
     # Preparar el nombre de la carpeta base para pasar a run_instance (si se desea agrupar salidas)
@@ -53,9 +53,9 @@ def run_file_instances_parallel(exe_path, file_path, w=8, max_workers=None):
     os.makedirs(output_folder, exist_ok=True)
 
     # Ejecutar las instancias en paralelo
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for i in range(num_instances):
-            executor.submit(run_instance, exe_path, file_path, i, w, base_folder)
+            executor.submit(run_instance, file_path, i, w, base_folder)
 
 def parse_blocks(filepath):
     blocks_info = []
@@ -140,7 +140,21 @@ def parse_actions(filepath):
     return results
 
 
-def generate_train_data(filename, pad=64):
+def get_w(filename: str) -> int:
+    with open(filename, 'r', encoding='utf-8') as f:
+        for line in f:
+            if "Beam width:" in line:
+                # Extraer la parte después de los dos puntos y convertir a int
+                try:
+                    return int(line.split(":")[1].strip())
+                except ValueError:
+                    raise ValueError(f"No se pudo convertir el beam width a entero en línea: {line.strip()}")
+
+    raise ValueError(f"No se encontró 'Beam width:' en el archivo {filename}")
+
+
+
+def generate_train_data(filename):
     X_src = []  # Para los datos del encoder (bloques)
     X_tgt = []  # Para los datos del decoder (acciones)
     Y = []      # Para las predicciones (vectores one-hot)
@@ -148,6 +162,7 @@ def generate_train_data(filename, pad=64):
 
     actions_data = parse_actions(filename)
     blocks_data = parse_blocks(filename)
+    seq_size = get_w(filename)**2
 
     # Eliminar ID de cada bloque (irrelevante)
     blocks_data = [sub[1:] for sub in blocks_data]
@@ -157,19 +172,18 @@ def generate_train_data(filename, pad=64):
         # Extraemos las características del bloque (el tercer elemento en cada bloque)
         features = [entry[1][:4] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
 
-        # Rellenamos con ceros si el número de características es menor que pad
-        while len(features) < pad:
-            features.append([0.0] * len(features[0]))  # Añadir una lista de ceros de la misma longitud que las características
+        # Consideramos solo cuando bloques = w2
+        if len(features) < seq_size: continue
 
         # Añadimos las características de este bloque a X
         X_src.append(blocks_data)
-        X_tgt.append(features[:pad])
+        X_tgt.append(features)
 
         # Extraemos el id del bloque elegido (primer valor de la tupla)
         selected_id = action[0]
 
         # Crear el vector one-hot para Y
-        one_hot = [0] * pad  # Inicializa un vector con ceros
+        one_hot = [0] * seq_size  # Inicializa un vector con ceros
 
         # Encontrar la posición de block_id en las tuplas de cada bloque
         best_block_idx = None
@@ -186,35 +200,29 @@ def generate_train_data(filename, pad=64):
                 idx = features.index(entry)
                 one_hot[idx] = 1  
 
-        # Rellenamos con ceros si la longitud de one_hot es menor que pad
-        while len(one_hot) < pad:
-            one_hot.append(0)  # Añadir ceros al final si hace falta
-
         # Añadir el vector one-hot a Y
-        Y.append(one_hot[:pad])  # Aseguramos que no se sobrepasen los "pad" elementos
+        Y.append(one_hot)
 
-        # Añadir las ids del bloque a block_ids y rellenar con ceros si es necesario
+        # Añadir las ids del bloque a block_ids
         action_ids = [entry[0] for entry in action[2]]  # Extrae solo el ID de cada tupla
-        while len(action_ids) < pad:
-            action_ids.append(0)  # Rellenar con ceros hasta alcanzar "pad"
-        ids.append(action_ids[:pad])  # Aseguramos que no se sobrepasen los "pad" elementos
+        ids.append(action_ids)
 
     return X_src, X_tgt, Y, ids
 
 
-def generate_data_from_folder(folder_path, pad=64):
+def generate_data_from_folder(folder_path):
     all_X_src = []  # Lista para almacenar entradas del encoder
     all_X_tgt = []  # Lista para almacenar entradas del decoder
     all_Y = []  # Lista para almacenar todos los vectores one-hot
     all_ids = []  # Lista para almacenar todos los block_ids
 
     # Iterar sobre todos los archivos en la carpeta
-    for filename in os.listdir(output_folder + folder_path):
-        file_path = os.path.join(output_folder + folder_path, filename)
+    for filename in os.listdir(settings.output_folder_path + folder_path):
+        file_path = os.path.join(settings.output_folder_path + folder_path, filename)
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
-            X_src, X_tgt, Y, ids = generate_train_data(file_path, pad=pad)
+            X_src, X_tgt, Y, ids = generate_train_data(file_path)
 
             # Agregar los datos del archivo actual a las listas generales
             all_X_src.extend(X_src)
@@ -249,7 +257,7 @@ def load_data_from_file(filename):
 
     return X_src, X_tgt, Y, ids
 
-def join_data_files(filenames):
+def join_data_files(filenames, output_filename):
     merged_data = {}  # Diccionario donde se unirán todos los datos
 
     for filename in filenames:
@@ -267,9 +275,7 @@ def join_data_files(filenames):
                     merged_data[key] = value.copy()  # crear nueva entrada
                     
     # Crear el nombre del archivo de salida
-    base_names = [os.path.splitext(name)[0] for name in filenames]  # quitar extensiones
-    merged_filename = "_".join(base_names) + "_merge.data"
-    output_path = os.path.join("data", merged_filename)
+    output_path = settings.data_folder_path + output_filename
 
     # Guardar el diccionario combinado
     with open(output_path, "wb") as f:

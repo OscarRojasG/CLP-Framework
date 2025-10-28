@@ -4,7 +4,7 @@ import os
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import TensorDataset, random_split, ConcatDataset, DataLoader, Subset
 import copy
 from src.data_generator import load_data_from_file
 
@@ -30,6 +30,10 @@ class Metrics():
         accuracy = 100 * self.correct / self.total
         self.acc_history.append(accuracy)
 
+class NamedSubset(Subset):
+    def __init__(self, subset, name):
+        super().__init__(subset.dataset, subset.indices)
+        self.name = name
 
 def save_model(model: nn.Module, filename):
     os.makedirs(model_folder_path, exist_ok=True)
@@ -63,25 +67,60 @@ def load_dataset(dataset_file):
     Y = torch.tensor(Y, dtype=torch.float32)
     return TensorDataset(X_tgt, Y)
 
-def train(model, epochs, train_set, train_size, test_sets, test_size, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
+def create_train_subsets(train_datasets, subset_size, seed=42):
+    def create_subset(datasets):
+        size_per_set = subset_size // len(datasets)
+        subsets = []
+        for dataset in datasets:
+            subset, _ = random_split(dataset, [size_per_set, len(dataset) - size_per_set])
+            subsets.append(subset)
+        
+        # Unir todos los subsets en uno solo
+        return ConcatDataset(subsets)
+
+    torch.manual_seed(seed)
+    train_subsets = []
+
+    current_datasets = []
+    for train_dataset in train_datasets:
+        current_datasets.append(train_dataset)
+        train_subset = create_subset(current_datasets)
+        train_subsets.append(train_subset)
+
+    return train_subsets
+
+def create_subsets(train_dataset_files, train_size, test_dataset_files, test_size, seed=42):
     torch.manual_seed(seed)
 
-    # Si el conjunto de entrenamiento está también en los test_sets, lo eliminamos
-    if train_set in test_sets:
-        test_sets = [ts for ts in test_sets if ts != train_set]
+    test_subsets = []
+    train_datasets = [None for _ in range(len(train_dataset_files))]
 
-    train_dataset = load_dataset(train_set)
-    train_dataset, test_dataset = random_split(train_dataset, [train_size, len(train_dataset) - train_size])
-    test_dataset, _ = random_split(test_dataset, [test_size, len(test_dataset) - test_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    for test_dataset_file in test_dataset_files:
+        test_dataset = load_dataset(test_dataset_file)
+        test_subset, complement_set = random_split(test_dataset, [test_size, len(test_dataset) - test_size])
+        test_subsets.append(NamedSubset(subset=test_subset, name=test_dataset_file))
 
-    test_loaders = [(test_loader, train_set, Metrics())]
+        if test_dataset_file in train_dataset_files:
+            train_datasets[train_dataset_files.index(test_dataset_file)] = complement_set
+
+    for i, train_dataset_file in enumerate(train_dataset_files):
+        if train_datasets[i] == None:
+            train_datasets[i] = load_dataset(train_dataset_file)
+    
+    train_subsets = create_train_subsets(train_datasets, train_size)
+    
+    return train_subsets, test_subsets
+
+
+def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
+    torch.manual_seed(seed)
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
+
+    test_loaders = []
     for test_set in test_sets: 
-        test_dataset = load_dataset(test_set)
-        test_dataset, _ = random_split(test_dataset, [test_size, len(test_dataset) - test_size])
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-        test_loaders.append((test_loader, test_set, Metrics()))
+        test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4)
+        test_loaders.append((test_loader, test_set.name, Metrics()))
 
     loss_function = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -145,3 +184,9 @@ def train(model, epochs, train_set, train_size, test_sets, test_size, batch_size
     # Al terminar todas las fases, restauramos el mejor modelo
     model.load_state_dict(best_model_wts)
     return model, train_metrics, [[test_set, metrics] for _, test_set, metrics in test_loaders]
+
+def curriculum_learning(model, epochs, train_dataset_files, train_size, test_dataset_files, test_size, batch_size, learning_rate, patience, seed=42):
+    train_sets, test_sets = create_subsets(train_dataset_files, train_size, test_dataset_files, test_size, seed)
+
+    for train_set in train_sets:
+        train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed)

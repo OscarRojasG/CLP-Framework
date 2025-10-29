@@ -2,10 +2,10 @@ from torch import nn
 from torch.utils.data import TensorDataset, random_split, ConcatDataset, DataLoader, Subset
 import torch
 import os
-from sklearn.preprocessing import StandardScaler
 import numpy as np
 import copy
 from src.data_generator import load_data_from_file
+from src.data_preprocessing import normalize_input, feature_expansion
 import matplotlib.pyplot as plt
 
 model_folder_path = "models/"
@@ -131,24 +131,9 @@ def load_model(empty_model: nn.Module, filename):
     empty_model.eval()
     return empty_model
 
-def normalize_input(X):
-    # Escalar con StandardScaler
-    # X shape: [num_ejemplos, num_acciones, 4]
-    X = np.array(X, dtype=np.float32)
-
-    # Aplano a 2D
-    X_flat = X.reshape(-1, X.shape[-1])  # [num_ejemplos*num_acciones, 4]
-
-    # Fit/transform
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_flat)
-
-    # Vuelvo a la forma original
-    X = X_scaled.reshape(-1, X.shape[1], X.shape[2])
-    return X
-
 def load_dataset(dataset_file):
     X_src, X_tgt, Y, blocks_ids = load_data_from_file(dataset_file)
+    X_tgt = feature_expansion(X_tgt)
     X_tgt = normalize_input(X_tgt)
     X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)

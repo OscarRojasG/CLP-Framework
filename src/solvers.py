@@ -3,9 +3,10 @@ from .env import Environment, State
 from abc import ABC, abstractmethod
 import subprocess
 from . import settings
+from src.data_preprocessing import feature_expansion, normalize_input
 import torch
 
-class Solver:
+class Solver(ABC):
     @abstractmethod
     def solve(self, instance_file, instance_number, w: int) -> int:
         pass
@@ -29,8 +30,10 @@ class ModelSolver(Solver):
             if len(valid_actions) == 0: break # Estado completado
 
             # Convertir acciones a vectores
-            action_vec = [action.action_vec for action in valid_actions]
-            action_vec = torch.tensor(action_vec, dtype=torch.float).unsqueeze(0)
+            action_vec = [[action.action_vec for action in valid_actions]]
+            action_vec = feature_expansion(action_vec)
+            action_vec = normalize_input(action_vec)
+            action_vec = torch.tensor(action_vec, dtype=torch.float32)
 
             # Predecir la mejor acción
             action_idx = self.model(action_vec).argmax()

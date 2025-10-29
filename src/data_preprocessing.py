@@ -1,5 +1,7 @@
 import os
 import pickle
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 from .data_generator import load_data_from_file
 
 def generate_datasets(filename, cuts):
@@ -57,36 +59,38 @@ def generate_datasets(filename, cuts):
         print(f"Dataset guardado en: {output_file_path} (Tamaño {len(dataset['X_src'])})")
 
 
-def remove_elements_with_zero(X_src, X_tgt, Y, blocks_ids):
-    # Crear una lista de índices a eliminar
-    indices_to_remove = []
+def feature_expansion(X):
+    """
+    Expande las features añadiendo log(x) y log(1-x).
+    Se asume que X contiene valores en el rango (0, 1).
+    """
+    X = np.array(X, dtype=np.float32)
+    
+    # Evitar log(0) o log(1)
+    eps = 1e-6
+    X_clamped = np.clip(X, eps, 1 - eps)
+    
+    # Calcular representaciones logarítmicas
+    X_log = np.log(X_clamped)
+    X_log_inv = np.log(1 - X_clamped)
 
-    # Recorre blocks_ids y encuentra los índices que contienen al menos un 0
-    for idx, arr in enumerate(blocks_ids):
-        if 0 in arr:
-            indices_to_remove.append(idx)
+    # Concatenar: [x, log(x), log(1-x)]
+    X_expanded = np.concatenate([X_clamped, X_log, X_log_inv], axis=-1)
 
-    # Eliminar los elementos en X, Y y blocks_ids correspondientes a los índices encontrados
-    X_src_filtered = [x for i, x in enumerate(X_src) if i not in indices_to_remove]
-    X_tgt_filtered = [x for i, x in enumerate(X_tgt) if i not in indices_to_remove]
-    Y_filtered = [y for i, y in enumerate(Y) if i not in indices_to_remove]
-    blocks_ids_filtered = [block for i, block in enumerate(blocks_ids) if i not in indices_to_remove]
+    return X_expanded
 
-    return X_src_filtered, X_tgt_filtered, Y_filtered, blocks_ids_filtered
+def normalize_input(X):
+    # Escalar con StandardScaler
+    # X shape: [num_ejemplos, num_acciones, 4]
+    X = np.array(X, dtype=np.float32)
 
+    # Aplano a 2D
+    X_flat = X.reshape(-1, X.shape[-1])  # [num_ejemplos*num_acciones, 4]
 
-def remove_elements_with_less_blocks(X, Y, blocks_ids, min_blocks=10000):
-    # Crear una lista de índices a eliminar
-    indices_to_remove = []
+    # Fit/transform
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_flat)
 
-    # Recorre blocks_ids y encuentra los índices que contienen al menos un 0
-    for idx, arr in enumerate(X):
-        if len(arr[0]) < min_blocks:
-            indices_to_remove.append(idx)
-
-    # Eliminar los elementos en X, Y y blocks_ids correspondientes a los índices encontrados
-    X_filtered = [x for i, x in enumerate(X) if i not in indices_to_remove]
-    Y_filtered = [y for i, y in enumerate(Y) if i not in indices_to_remove]
-    blocks_ids_filtered = [block for i, block in enumerate(blocks_ids) if i not in indices_to_remove]
-
-    return X_filtered, Y_filtered, blocks_ids_filtered
+    # Vuelvo a la forma original
+    X = X_scaled.reshape(-1, X.shape[1], X.shape[2])
+    return X

@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from .data_generator import load_data_from_file
 
-def generate_datasets(filename, cuts):
+def generate_datasets(filename, cuts, max_size=None):
     """Separa los datos en varios datasets según los cortes y guarda en archivos .data"""
 
     output_path = "data/datasets"
@@ -40,6 +40,11 @@ def generate_datasets(filename, cuts):
     for i, dataset in datasets.items():
         start_cut = cuts[i - 1] + 1 if i > 1 else 1
         end_cut = cuts[i]
+    
+        # Si hay un límite de tamaño, truncar el dataset
+        if max_size is not None and len(dataset["X_src"]) > max_size:
+            for key in dataset:
+                dataset[key] = dataset[key][:max_size]
 
         output_filename = f"{filename.split('.')[0]}_{start_cut}-{end_cut}.data"
         output_file_path = os.path.join(output_path, output_filename)

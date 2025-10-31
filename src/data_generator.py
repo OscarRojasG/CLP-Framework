@@ -59,38 +59,28 @@ def run_file_instances_parallel(file_path, w=8, max_workers=None):
 
 def parse_blocks(filepath):
     blocks_info = []
-    container_dims = None  # (L, W, H)
 
     with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
 
-            # Detectar dimensiones del contenedor
-            if container_dims is None and line.count(" ") == 2 and line.replace(" ", "").isdigit():
-                # Ejemplo: "587 233 220"
-                parts = line.split()
-                container_dims = tuple(map(int, parts))  # (L, W, H)
-
-            # Detectar bloques
-            if line.startswith("block:"):
-                # Ejemplo: block: 1 (51,66,45)
+            # Solo procesar líneas con formato "block:XXXX metrics:"
+            if line.startswith("block:") and "metrics:" in line:
                 try:
-                    prefix, dims_str = line.split("(")
-                    block_id = int(prefix.split()[1])
-                    dims = dims_str.strip(")").split(",")
-                    block_dims = tuple(map(int, dims))  # (L, W, H)
+                    # Ejemplo: "block:2886 metrics: 0.46 0.34 0.68 ..."
+                    parts = line.split("metrics:")
+                    block_id_str = parts[0].replace("block:", "").strip()
+                    block_id = int(block_id_str)
 
-                    # Normalizar
-                    l_ratio = block_dims[0] / container_dims[0]
-                    w_ratio = block_dims[1] / container_dims[1]
-                    h_ratio = block_dims[2] / container_dims[2]
+                    # Convertir los valores numéricos a float
+                    metrics = list(map(float, parts[1].strip().split()))
 
-                    blocks_info.append([block_id, l_ratio, w_ratio, h_ratio])
+                    # [block_id, feature1, feature2, ...]
+                    blocks_info.append([block_id] + metrics)
+
                 except Exception as e:
                     print(f"Error parsing line: {line} -> {e}")
 
-    # lista [info_b1, info_b2, ...]
-    # info bloque: [block_id, l_ratio, w_ratio, h_ratio]
     return blocks_info
 
 

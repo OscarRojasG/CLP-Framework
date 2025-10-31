@@ -140,7 +140,7 @@ def load_dataset(dataset_file):
     X_tgt = normalize_input(X_tgt)
     X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)
-    return NamedDataset(dataset_file, X_tgt, X_src, Y)
+    return NamedDataset(dataset_file, X_src, X_tgt, Y)
 
 def create_train_subsets(train_datasets, subset_size, seed=42):
     def create_subset(datasets):
@@ -185,7 +185,7 @@ def create_subsets(train_datasets, train_size, test_datasets, test_size, seed=42
 
 
 def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
-    def get_predictions(model, X_tgt_batch, X_src_batch):
+    def get_predictions(model, X_src_batch, X_tgt_batch):
         if isinstance(model, EncoderDecoderModel):
             return model(X_src_batch, X_tgt_batch)
         elif isinstance(model, DecoderOnlyModel):
@@ -222,14 +222,14 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
     for epoch in range(epochs):
         # --- ENTRENAMIENTO ---
         model.train()
-        for X_tgt_batch, X_src_batch, y_batch in train_loader:
+        for X_src_batch, X_tgt_batch, y_batch in train_loader:
             # Mover los datos al dispositivo
-            X_tgt_batch = X_tgt_batch.to(device)
             X_src_batch = X_src_batch.to(device)
+            X_tgt_batch = X_tgt_batch.to(device)
             y_batch = y_batch.to(device)
 
             optimizer.zero_grad()
-            outputs = get_predictions(model, X_tgt_batch, X_src_batch)
+            outputs = get_predictions(model, X_src_batch, X_tgt_batch)
             loss = loss_function(outputs, y_batch.argmax(dim=-1))
             loss.backward()
             optimizer.step()
@@ -242,12 +242,12 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
         model.eval()
         with torch.no_grad():
             for test_loader, metrics in test_loaders:
-                for X_tgt_batch, X_src_batch, y_batch in test_loader:
-                    X_tgt_batch = X_tgt_batch.to(device)
+                for X_src_batch, X_tgt_batch, y_batch in test_loader:
                     X_src_batch = X_src_batch.to(device)
+                    X_tgt_batch = X_tgt_batch.to(device)
                     y_batch = y_batch.to(device)
 
-                    outputs = get_predictions(model, X_tgt_batch, X_src_batch)
+                    outputs = get_predictions(model, X_src_batch, X_tgt_batch)
                     loss = loss_function(outputs, y_batch.argmax(dim=-1))
                     metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
                 metrics.end_epoch()

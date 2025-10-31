@@ -5,9 +5,9 @@ class MLPEncoder(nn.Module):
     def __init__(self, input_dim, embed_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 16),
+            nn.Linear(input_dim, 128),
             nn.ReLU(),
-            nn.Linear(16, embed_dim)
+            nn.Linear(128, embed_dim)
         )
 
     def forward(self, x):

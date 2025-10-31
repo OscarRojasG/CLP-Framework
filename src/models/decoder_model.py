@@ -1,7 +1,7 @@
 import torch.nn as nn
-import torch.nn.functional as F
+from .base.decoder_only import DecoderOnlyModel
 
-class DecoderModel(nn.Module):
+class DecoderModel(DecoderOnlyModel):
     def __init__(self, input_dim, num_heads, head_dim, num_layers=2, dropout_rate=0):
         super(DecoderModel, self).__init__()
         self.num_heads = num_heads

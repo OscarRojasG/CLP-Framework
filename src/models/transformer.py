@@ -1,12 +1,13 @@
 import torch.nn as nn
+from .base.encoder_decoder import EncoderDecoderModel
 
 class MLPEncoder(nn.Module):
     def __init__(self, input_dim, embed_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, 16),
             nn.ReLU(),
-            nn.Linear(256, embed_dim)
+            nn.Linear(16, embed_dim)
         )
 
     def forward(self, x):
@@ -17,7 +18,7 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 
-class Transformer(nn.Module):
+class Transformer(EncoderDecoderModel):
     def __init__(self, src_dim, tgt_dim, num_heads, head_dim, num_layers=2, dropout_rate=0):
         super(Transformer, self).__init__()
         self.num_heads = num_heads

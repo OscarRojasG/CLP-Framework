@@ -154,14 +154,16 @@ def get_w(filename: str) -> int:
 
 
 
-def generate_train_data(filename):
+def generate_train_data(filename, min_blocks=10000):
     X_src = []  # Para los datos del encoder (bloques)
     X_tgt = []  # Para los datos del decoder (acciones)
     Y = []      # Para las predicciones (vectores one-hot)
     ids = []    # Para las ids de los bloques
 
-    actions_data = parse_actions(filename)
     blocks_data = parse_blocks(filename)
+    if len(blocks_data) < min_blocks: return X_src, X_tgt, Y, ids
+
+    actions_data = parse_actions(filename)
     seq_size = get_w(filename)**2
 
     # Eliminar ID de cada bloque (irrelevante)
@@ -170,7 +172,7 @@ def generate_train_data(filename):
     # Recorremos cada bloque
     for action in actions_data:
         # Extraemos las características del bloque (el tercer elemento en cada bloque)
-        features = [entry[1][:4] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
+        features = [entry[1] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
 
         # Consideramos solo cuando bloques = w2
         if len(features) < seq_size: continue

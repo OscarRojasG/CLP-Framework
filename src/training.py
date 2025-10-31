@@ -7,6 +7,8 @@ import copy
 from src.data_generator import load_data_from_file
 from src.data_preprocessing import normalize_input, feature_expansion
 import matplotlib.pyplot as plt
+from .models.base.encoder_decoder import EncoderDecoderModel
+from .models.base.decoder_only import DecoderOnlyModel
 
 model_folder_path = "models/"
 
@@ -133,11 +135,12 @@ def load_model(empty_model: nn.Module, filename):
 
 def load_dataset(dataset_file):
     X_src, X_tgt, Y, blocks_ids = load_data_from_file(dataset_file)
-    X_tgt = feature_expansion(X_tgt)
+    X_src = torch.tensor(X_src, dtype=torch.float32)
+    #X_tgt = feature_expansion(X_tgt)
     X_tgt = normalize_input(X_tgt)
     X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)
-    return NamedDataset(dataset_file, X_tgt, Y)
+    return NamedDataset(dataset_file, X_tgt, X_src, Y)
 
 def create_train_subsets(train_datasets, subset_size, seed=42):
     def create_subset(datasets):
@@ -182,13 +185,20 @@ def create_subsets(train_datasets, train_size, test_datasets, test_size, seed=42
 
 
 def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
-    torch.manual_seed(seed)
+    def get_predictions(model, X_tgt_batch, X_src_batch):
+        if isinstance(model, EncoderDecoderModel):
+            return model(X_src_batch, X_tgt_batch)
+        elif isinstance(model, DecoderOnlyModel):
+            return model(X_tgt_batch)
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
+    torch.manual_seed(seed)
+    torch.set_num_threads(os.cpu_count())  # usa todos los cores disponibles
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=8)
 
     test_loaders = []
     for test_set in test_sets: 
-        test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4)
+        test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=8)
         test_loaders.append((test_loader, ValMetrics(test_set.name)))
 
     loss_function = torch.nn.CrossEntropyLoss()
@@ -204,9 +214,9 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
         # --- ENTRENAMIENTO ---
         model.train()
 
-        for X_tgt_batch, y_batch in train_loader:
+        for X_tgt_batch, X_src_batch, y_batch in train_loader:
             optimizer.zero_grad()
-            outputs = model(X_tgt_batch)
+            outputs = get_predictions(model, X_tgt_batch, X_src_batch)
             loss = loss_function(outputs, y_batch.argmax(dim=-1))
             loss.backward()
             optimizer.step()
@@ -220,8 +230,8 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
 
         with torch.no_grad():
             for test_loader, metrics in test_loaders:
-                for X_tgt_batch, y_batch in test_loader:
-                    outputs = model(X_tgt_batch)
+                for X_tgt_batch, X_src_batch, y_batch in test_loader:
+                    outputs = get_predictions(model, X_tgt_batch, X_src_batch)
                     loss = loss_function(outputs, y_batch.argmax(dim=-1))
                     metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
                 metrics.end_epoch()  # <-- almacena métricas por época
@@ -265,8 +275,9 @@ def curriculum_learning(model, epochs, train_datasets, train_size, test_datasets
     train_sets, test_sets = create_subsets(train_datasets, train_size, test_datasets, test_size, seed)
     stats = TrainingStats()
 
-    for train_set in train_sets:
-        model, train_metrics, val_metrics = train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed)
+    for i, train_set in enumerate(train_sets):
+        phase_epochs = epochs[i]
+        model, train_metrics, val_metrics = train(model, phase_epochs, train_set, test_sets, batch_size, learning_rate, patience, seed)
         stats.add_phase_stats(train_metrics, val_metrics)
 
     return stats

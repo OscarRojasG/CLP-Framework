@@ -191,8 +191,17 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
         elif isinstance(model, DecoderOnlyModel):
             return model(X_tgt_batch)
 
+    # --- CONFIGURAR DISPOSITIVO ---
+    device = torch.device("cuda" if torch.cuda.is_available() 
+                          else "mps" if torch.backends.mps.is_available() 
+                          else "cpu")
+    print(f"Usando dispositivo: {device}")
+
     torch.manual_seed(seed)
-    torch.set_num_threads(os.cpu_count())  # usa todos los cores disponibles
+    torch.set_num_threads(os.cpu_count())
+
+    # Mover el modelo al dispositivo
+    model = model.to(device)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=8)
 
@@ -213,8 +222,12 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
     for epoch in range(epochs):
         # --- ENTRENAMIENTO ---
         model.train()
-
         for X_tgt_batch, X_src_batch, y_batch in train_loader:
+            # Mover los datos al dispositivo
+            X_tgt_batch = X_tgt_batch.to(device)
+            X_src_batch = X_src_batch.to(device)
+            y_batch = y_batch.to(device)
+
             optimizer.zero_grad()
             outputs = get_predictions(model, X_tgt_batch, X_src_batch)
             loss = loss_function(outputs, y_batch.argmax(dim=-1))
@@ -223,18 +236,21 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
 
             train_metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
 
-        train_metrics.end_epoch()  # <-- almacena métricas por época
+        train_metrics.end_epoch()
 
         # --- VALIDACIÓN ---
         model.eval()
-
         with torch.no_grad():
             for test_loader, metrics in test_loaders:
                 for X_tgt_batch, X_src_batch, y_batch in test_loader:
+                    X_tgt_batch = X_tgt_batch.to(device)
+                    X_src_batch = X_src_batch.to(device)
+                    y_batch = y_batch.to(device)
+
                     outputs = get_predictions(model, X_tgt_batch, X_src_batch)
                     loss = loss_function(outputs, y_batch.argmax(dim=-1))
                     metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
-                metrics.end_epoch()  # <-- almacena métricas por época
+                metrics.end_epoch()
             
         # --- PRINT EPOCH RESULTS ---
         val_loss_epoch = np.mean([m.loss_history[-1] for _, m in test_loaders if m.subset_name in train_set.origin_dataset_names])

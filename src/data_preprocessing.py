@@ -3,9 +3,11 @@ import pickle
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from .data_generator import load_data_from_file
+import torch
 
-def generate_datasets(filename, cuts, max_size=None):
+def generate_datasets(filename, cuts, max_size=None, seed=42):
     """Separa los datos en varios datasets según los cortes y guarda en archivos .data"""
+    np.random.seed(seed)
 
     output_path = "data/datasets"
 
@@ -41,10 +43,13 @@ def generate_datasets(filename, cuts, max_size=None):
         start_cut = cuts[i - 1] + 1 if i > 1 else 1
         end_cut = cuts[i]
     
-        # Si hay un límite de tamaño, truncar el dataset
+        # Si hay un límite de tamaño, truncar el dataset de manera aleatoria
         if max_size is not None and len(dataset["X_src"]) > max_size:
+            n = len(dataset["X_src"])
+            indices = np.random.choice(n, size=max_size, replace=False)  # índices aleatorios sin repetición
+
             for key in dataset:
-                dataset[key] = dataset[key][:max_size]
+                dataset[key] = [dataset[key][i] for i in indices]
 
         output_filename = f"{filename.split('.')[0]}_{start_cut}-{end_cut}.data"
         output_file_path = os.path.join(output_path, output_filename)

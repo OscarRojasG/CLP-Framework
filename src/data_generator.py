@@ -162,14 +162,11 @@ def generate_train_data(filename, min_blocks=10000):
     # Recorremos cada bloque
     for action in actions_data:
         # Extraemos las características del bloque (el tercer elemento en cada bloque)
-        features = [entry[1] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
+        #features = [entry[1] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
+        features = [entry[1][1:] for entry in action[2]]
 
         # Consideramos solo cuando bloques = w2
         if len(features) < seq_size: continue
-
-        # Añadimos las características de este bloque a X
-        X_src.append(blocks_data)
-        X_tgt.append(features)
 
         # Extraemos el id del bloque elegido (primer valor de la tupla)
         selected_id = action[0]
@@ -185,12 +182,18 @@ def generate_train_data(filename, min_blocks=10000):
                 best_block_idx = i
                 break
 
-        # one_hot = 1 para features iguales al mejor bloque
-        best_block_features = features[best_block_idx]
-        for entry in features:
-            if entry == best_block_features:
-                idx = features.index(entry)
-                one_hot[idx] = 1  
+        # Eliminamos casos donde eval del mejor bloque se repite
+        repeated = False
+        best_block_eval = action[2][i][1][0]
+        for idx, entry in enumerate(action[2]):
+            if entry[1][0] == best_block_eval and idx != best_block_idx:
+                repeated = True
+                break
+        if repeated: continue
+
+        # Añadimos las características de este bloque a X
+        X_src.append(blocks_data)
+        X_tgt.append(features)
 
         # Añadir el vector one-hot a Y
         Y.append(one_hot)

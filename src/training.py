@@ -9,6 +9,7 @@ from src.data_preprocessing import normalize_input, feature_expansion
 import matplotlib.pyplot as plt
 from .models.base.encoder_decoder import EncoderDecoderModel
 from .models.base.decoder_only import DecoderOnlyModel
+from sklearn.preprocessing import StandardScaler
 
 model_folder_path = "models/"
 
@@ -137,58 +138,50 @@ def load_dataset(dataset_file):
     X_src, X_tgt, Y, blocks_ids = load_data_from_file(dataset_file)
     X_src = torch.tensor(X_src, dtype=torch.float32)
     #X_tgt = feature_expansion(X_tgt)
-    X_tgt = normalize_input(X_tgt)
+    #X_tgt = normalize_input(X_tgt)
+    X_tgt = np.array(X_tgt, dtype=np.float32)
+    X_tgt = X_tgt[..., 3:]
     X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)
     return NamedDataset(dataset_file, X_src, X_tgt, Y)
 
-def create_train_subsets(train_datasets, subset_size, seed=42):
-    def create_subset(datasets):
-        size_per_set = subset_size // len(datasets)
-        subsets = []
-        for dataset in datasets:
-            subset, _ = random_split(dataset, [size_per_set, len(dataset) - size_per_set])
-            subsets.append(subset)
-        
-        # Unir todos los subsets en uno solo
-        dataset_names = [dataset.name for dataset in datasets]
-        return TrainSubset(subsets=subsets, origin_dataset_names=dataset_names)
-
+def create_train_subsets(train_datasets, train_size, train_weights, seed=42):
     torch.manual_seed(seed)
     train_subsets = []
+    dataset_names = []
 
-    current_datasets = []
-    for train_dataset in train_datasets:
-        current_datasets.append(train_dataset)
-        train_subset = create_subset(current_datasets)
+    for i, train_dataset in enumerate(train_datasets):
+        subset_size = int(train_size * train_weights[i] / sum(train_weights))
+        if subset_size == 0: continue
+        train_subset, _ = random_split(train_dataset, [subset_size, len(train_dataset) - subset_size])
         train_subsets.append(train_subset)
+        dataset_names.append(train_dataset.name)
 
-    return train_subsets
+    return TrainSubset(subsets=train_subsets, origin_dataset_names=dataset_names)
 
-def create_subsets(train_datasets, train_size, test_datasets, test_size, seed=42):
+def create_subsets(datasets, train_size, train_weights, test_size, test_weights, seed):
     torch.manual_seed(seed)
 
     test_subsets = []
+    train_datasets = []
 
-    for test_dataset in test_datasets:
-        test_subset, complement_set = random_split(test_dataset, [test_size, len(test_dataset) - test_size])
-        test_subsets.append(ValSubset(subset=test_subset, name=test_dataset.name))
-        complement_set = ValSubset(subset=complement_set, name=test_dataset.name)
-
-        train_dataset_names = [train_dataset.name for train_dataset in train_datasets]
-        if test_dataset.name in train_dataset_names:
-            train_datasets[train_dataset_names.index(test_dataset.name)] = complement_set
+    for i, dataset in enumerate(datasets):
+        subset_size = int(test_size * test_weights[i] / sum(test_weights))
+        test_subset, complement_set = random_split(dataset, [subset_size, len(dataset) - subset_size])
+        test_subsets.append(ValSubset(subset=test_subset, name=dataset.name))
+        complement_set = ValSubset(subset=complement_set, name=dataset.name)
+        train_datasets.append(complement_set)
     
-    train_subsets = create_train_subsets(train_datasets, train_size)
+    train_subset = create_train_subsets(train_datasets, train_size, train_weights)
     
-    return train_subsets, test_subsets
+    return train_subset, test_subsets
 
 
-def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
     def get_predictions(model, X_src_batch, X_tgt_batch):
         if isinstance(model, EncoderDecoderModel):
             return model(X_src_batch, X_tgt_batch)
-        elif isinstance(model, DecoderOnlyModel):
+        else:
             return model(X_tgt_batch)
 
     # --- CONFIGURAR DISPOSITIVO ---
@@ -211,7 +204,7 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
         test_loaders.append((test_loader, ValMetrics(test_set.name)))
 
     loss_function = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     train_metrics = Metrics()
 
     # Early stopping
@@ -253,11 +246,17 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
                 metrics.end_epoch()
             
         # --- PRINT EPOCH RESULTS ---
-        val_loss_epoch = np.mean([m.loss_history[-1] for _, m in test_loaders if m.subset_name in train_set.origin_dataset_names])
-        val_acc_epoch = np.mean([m.acc_history[-1] for _, m in test_loaders if m.subset_name in train_set.origin_dataset_names])
+        samples_per_set = [len(test_set) for test_set in test_sets]
+        overall_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
 
-        val_loss_mean = np.mean([m.loss_history[-1] for _, m in test_loaders])
-        val_acc_mean = np.mean([m.acc_history[-1] for _, m in test_loaders])
+        samples_per_set = [len(test_set) if test_set.name in train_set.origin_dataset_names else 0 for test_set in test_sets]
+        epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
+
+        val_loss_wgt = np.sum(test_loaders[i][1].loss_history[-1] * overall_weights[i] for i in range(len(test_loaders)))
+        val_acc_wgt = np.sum(test_loaders[i][1].acc_history[-1] * overall_weights[i] for i in range(len(test_loaders)))
+
+        val_loss_epoch = np.sum(test_loaders[i][1].loss_history[-1] * epoch_weights[i] for i in range(len(test_loaders)) if test_loaders[i][1].subset_name in train_set.origin_dataset_names)
+        val_acc_epoch = np.sum(test_loaders[i][1].acc_history[-1] * epoch_weights[i] for i in range(len(test_loaders)) if test_loaders[i][1].subset_name in train_set.origin_dataset_names)
 
         print(f'Epoch {epoch + 1}/{epochs} - '
             f'Train Loss: {train_metrics.loss_history[-1]:.4f}, '
@@ -268,8 +267,8 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
             print(f'    Test Set: {m.subset_name} - '
                 f'Val Loss: {m.loss_history[-1]:.4f}, Val Accuracy: {m.acc_history[-1]:.2f}%')
 
-        print(f'    Average - '
-            f'Val Loss: {val_loss_mean:.4f}, Val Accuracy: {val_acc_mean:.2f}%')  
+        print(f'    Weighted - '
+            f'Val Loss: {val_loss_wgt:.4f}, Val Accuracy: {val_acc_wgt:.2f}%')  
 
         # --- EARLY STOPPING SOLO EN LOSS ---
         if val_loss_epoch < best_loss:
@@ -287,13 +286,11 @@ def train(model, epochs, train_set, test_sets, batch_size, learning_rate, patien
     model.load_state_dict(best_model_wts)
     return model, train_metrics, [metrics for _, metrics in test_loaders]
 
-def curriculum_learning(model, epochs, train_datasets, train_size, test_datasets, test_size, batch_size, learning_rate, patience, seed=42):
-    train_sets, test_sets = create_subsets(train_datasets, train_size, test_datasets, test_size, seed)
+def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, patience, seed=42):
+    train_set, test_sets = create_subsets(datasets, train_size, train_weights, test_size, test_weights, seed)
     stats = TrainingStats()
 
-    for i, train_set in enumerate(train_sets):
-        phase_epochs = epochs[i]
-        model, train_metrics, val_metrics = train(model, phase_epochs, train_set, test_sets, batch_size, learning_rate, patience, seed)
-        stats.add_phase_stats(train_metrics, val_metrics)
+    model, train_metrics, val_metrics = _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed)
+    stats.add_phase_stats(train_metrics, val_metrics)
 
     return stats

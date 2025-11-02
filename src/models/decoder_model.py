@@ -40,20 +40,14 @@ class DecoderModel(DecoderOnlyModel):
 
         # Aplicar cada capa de atención y densa
         for layer in self.layers:
-            x_proj = x_proj.permute(1, 0, 2)
-            attn_output, _ = layer['multihead_attention'](
-                x_proj, x_proj, x_proj
-            )
-            attn_output = attn_output.permute(1, 0, 2)
-            x_proj = x_proj.permute(1, 0, 2)
-            attn_output = layer['norm1'](attn_output + x_proj)
-            dense_output = layer['dense_layer'](attn_output)
-            x_proj = layer['norm2'](dense_output + attn_output)
+            x_seq = x_proj.permute(1, 0, 2)  # [L, B, D]
+            attn_output, _ = layer['multihead_attention'](x_seq, x_seq, x_seq)
+            attn_output = attn_output.permute(1, 0, 2)  # [B, L, D]
+
+            y = layer['norm1'](x_proj + attn_output)
+            ffn_output = layer['dense_layer'](y)
+            x_proj = layer['norm2'](y + ffn_output)
 
         # Proyección de salida final (logits)
-        output = self.output_projection(x_proj)  # [batch_size, seq_length, num_classes]
-
-        # Flatten
-        flat_output = output.view(output.size(0), -1)  # [batch_size, seq_length]
-
-        return flat_output  # Retorna los logits (sin aplicar softmax)
+        output = self.output_projection(x_proj).squeeze(-1)  # [B, L]
+        return output  # logits directos

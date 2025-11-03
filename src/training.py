@@ -8,8 +8,7 @@ from src.data_generator import load_data_from_file
 from src.data_preprocessing import normalize_input, feature_expansion
 import matplotlib.pyplot as plt
 from .models.base.encoder_decoder import EncoderDecoderModel
-from .models.base.decoder_only import DecoderOnlyModel
-from sklearn.preprocessing import StandardScaler
+from .models.base.encoder_decoder_pe import EncoderDecoderPEModel
 
 model_folder_path = "models/"
 
@@ -135,15 +134,13 @@ def load_model(empty_model: nn.Module, filename):
     return empty_model
 
 def load_dataset(dataset_file):
-    X_src, X_tgt, Y, blocks_ids = load_data_from_file(dataset_file)
+    X_src, X_tgt, Y, placed, coords = load_data_from_file(dataset_file)
     X_src = torch.tensor(X_src, dtype=torch.float32)
-    #X_tgt = feature_expansion(X_tgt)
-    #X_tgt = normalize_input(X_tgt)
-    X_tgt = np.array(X_tgt, dtype=np.float32)
-    X_tgt = X_tgt[..., 3:]
     X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)
-    return NamedDataset(dataset_file, X_src, X_tgt, Y)
+    placed = torch.tensor(placed, dtype=torch.float32)
+    coords = torch.tensor(coords, dtype=torch.float32)
+    return NamedDataset(dataset_file, X_src, X_tgt, Y, placed, coords)
 
 def create_train_subsets(train_datasets, train_size, train_weights, seed=42):
     torch.manual_seed(seed)
@@ -178,7 +175,9 @@ def create_subsets(datasets, train_size, train_weights, test_size, test_weights,
 
 
 def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
-    def get_predictions(model, X_src_batch, X_tgt_batch):
+    def get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch):
+        if isinstance(model, EncoderDecoderPEModel):
+            return model(X_src_batch, X_tgt_batch, placed_batch, coords_batch)
         if isinstance(model, EncoderDecoderModel):
             return model(X_src_batch, X_tgt_batch)
         else:
@@ -215,14 +214,16 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patie
     for epoch in range(epochs):
         # --- ENTRENAMIENTO ---
         model.train()
-        for X_src_batch, X_tgt_batch, y_batch in train_loader:
+        for X_src_batch, X_tgt_batch, y_batch, placed_batch, coords_batch in train_loader:
             # Mover los datos al dispositivo
             X_src_batch = X_src_batch.to(device)
             X_tgt_batch = X_tgt_batch.to(device)
+            placed_batch = placed_batch.to(device)
+            coords_batch = coords_batch.to(device)
             y_batch = y_batch.to(device)
 
             optimizer.zero_grad()
-            outputs = get_predictions(model, X_src_batch, X_tgt_batch)
+            outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)
             loss = loss_function(outputs, y_batch.argmax(dim=-1))
             loss.backward()
             optimizer.step()
@@ -235,12 +236,14 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patie
         model.eval()
         with torch.no_grad():
             for test_loader, metrics in test_loaders:
-                for X_src_batch, X_tgt_batch, y_batch in test_loader:
+                for X_src_batch, X_tgt_batch, y_batch, placed_batch, coords_batch in test_loader:
                     X_src_batch = X_src_batch.to(device)
                     X_tgt_batch = X_tgt_batch.to(device)
+                    placed_batch = placed_batch.to(device)
+                    coords_batch = coords_batch.to(device)
                     y_batch = y_batch.to(device)
 
-                    outputs = get_predictions(model, X_src_batch, X_tgt_batch)
+                    outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)
                     loss = loss_function(outputs, y_batch.argmax(dim=-1))
                     metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
                 metrics.end_epoch()

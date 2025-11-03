@@ -3,11 +3,43 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 import re
 import pickle
+import numpy as np
+from typing import Dict, List, Tuple
 from . import settings
 
 
-output_folder = "outputs/"
-data_folder = "data/"
+
+class BlockData:
+    """Información de un bloque."""
+    def __init__(self, block_id: int, metrics: List[float]):
+        self.block_id = block_id
+        self.metrics = metrics
+
+    def __repr__(self):
+        return f"Block(id={self.block_id})"
+
+
+class Action:
+    """Acción que consiste en colocar un bloque con ciertas métricas."""
+    def __init__(self, block: BlockData, metrics: List[float]):
+        self.block = block          # BlockData
+        self.metrics = metrics      # métricas asociadas a la acción
+
+    def __repr__(self):
+        return f"Action(block={self.block.block_id}, metrics={self.metrics})"
+
+
+class State:
+    """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
+    def __init__(self, coords: Tuple[int, int, int], actions: List[Action], chosen_action: Action = None):
+        self.coords = coords                # (x, y, z)
+        self.actions = actions              # lista de Action
+        self.chosen_action = chosen_action  # Action elegida (opcional)
+
+    def __repr__(self):
+        chosen = self.chosen_action.block.block_id if self.chosen_action else None
+        return f"State(coords={self.coords}, actions={len(self.actions)}, chosen={chosen})"
+
 
 
 def run_instance(file_path, i, w, base_folder=None):
@@ -16,9 +48,9 @@ def run_instance(file_path, i, w, base_folder=None):
     # Asegurarse de que la carpeta de salida exista
     # Determinar carpeta destino: si se pasa base_folder, guardamos dentro de output_folder/base_folder
     if base_folder:
-        dest_dir = os.path.join(output_folder, base_folder)
+        dest_dir = os.path.join(settings.output_folder_path, base_folder)
     else:
-        dest_dir = output_folder
+        dest_dir = settings.output_folder_path
 
     os.makedirs(dest_dir, exist_ok=True)
 
@@ -50,15 +82,16 @@ def run_file_instances_parallel(file_path, w=8, max_workers=None):
     # Preparar el nombre de la carpeta base para pasar a run_instance (si se desea agrupar salidas)
     base_folder = os.path.splitext(os.path.basename(file_path))[0] + ".out"
     # Nos aseguramos de que la carpeta output principal exista (las subcarpetas se crearán en run_instance)
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(settings.output_folder_path, exist_ok=True)
 
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for i in range(num_instances):
             executor.submit(run_instance, file_path, i, w, base_folder)
 
-def parse_blocks(filepath):
-    blocks_info = []
+def parse_blocks(filepath: str) -> dict[int, BlockData]:
+    """Lee un archivo y devuelve un diccionario {block_id: BlockData}."""
+    blocks_info = {}
 
     with open(filepath, "r") as f:
         for line in f:
@@ -75,40 +108,60 @@ def parse_blocks(filepath):
                     # Convertir los valores numéricos a float
                     metrics = list(map(float, parts[1].strip().split()))
 
-                    # [block_id, feature1, feature2, ...]
-                    blocks_info.append([block_id] + metrics)
+                    # Guardar en el diccionario
+                    blocks_info[block_id] = BlockData(block_id, metrics)
 
                 except Exception as e:
                     print(f"Error parsing line: {line} -> {e}")
 
     return blocks_info
 
-
-def parse_actions(filepath):
+def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State]:
+    """
+    Parsea un archivo de acciones y devuelve una lista de objetos State.
+    Cada State contiene:
+      - coordenadas de inserción
+      - lista de posibles acciones (Action)
+      - la acción elegida (Action)
+    """
     results = []
     current_block = None
 
     re_selected = re.compile(r"selected block:(\d+)\s+space:\((\d+),(\d+),(\d+)\)")
     re_action = re.compile(r"action block:(\d+)\s+eval:\s+([0-9eE+.\s\-infINF]+)")
 
-    # Abrimos el archivo y leemos su contenido
-    with open(filepath, 'r') as f:
+    def finalize_block(block_tuple):
+        if not block_tuple:
+            return
+
+        chosen_block_id, coords, actions_raw = block_tuple
+        actions = [
+            Action(blocks_info[act_id], act_metrics)
+            for act_id, act_metrics in actions_raw
+            if act_id in blocks_info
+        ]
+
+        # Buscar la acción elegida entre las posibles
+        chosen_action = next((a for a in actions if a.block.block_id == chosen_block_id), None)
+        if chosen_action is None:
+            raise ValueError(f"Bloque elegido {chosen_block_id} no aparece entre las acciones disponibles.")
+
+        results.append(State(coords, actions, chosen_action))
+
+    with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
 
-            # selected block
             m_sel = re_selected.match(line)
             if m_sel:
-                if current_block:
-                    results.append(current_block)
+                finalize_block(current_block)
                 block_id = int(m_sel.group(1))
                 coords = tuple(map(int, m_sel.groups()[1:]))
                 current_block = (block_id, coords, [])
                 continue
 
-            # action block
             m_act = re_action.match(line)
             if m_act and current_block:
                 act_id = int(m_act.group(1))
@@ -118,17 +171,11 @@ def parse_actions(filepath):
                     try:
                         nums.append(float(tok))
                     except ValueError:
-                        # fallback por si aparece algo inesperado
                         nums.append(float("nan"))
                 current_block[2].append((act_id, nums))
 
-    if current_block:
-        results.append(current_block)
-
-    # [(bloque_elegido:int, coordenadas:tupla, acciones disponibles:lista)]
-    # acción = (bloque_id:int, features:lista)
+    finalize_block(current_block)
     return results
-
 
 def get_w(filename: str) -> int:
     with open(filename, 'r', encoding='utf-8') as f:
@@ -143,73 +190,98 @@ def get_w(filename: str) -> int:
     raise ValueError(f"No se encontró 'Beam width:' en el archivo {filename}")
 
 
+def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
+    """
+    Genera:
+        X_src_all     : (repetido) métricas de todos los bloques
+        X_tgt_all     : métricas de las acciones factibles por estado
+        Y_all         : vector one-hot del bloque elegido
+        placed_all    : vector (min_actions) con índices+1 de bloques colocados (0 = padding)
+        coords_masked : matriz (min_actions, 3) con coordenadas de los bloques colocados
+    """
+    # --- Cargar datos ---
+    blocks_info = parse_blocks(filename)
+    if len(blocks_info) < min_blocks:
+        return [], [], [], [], []
 
-def generate_train_data(filename, min_blocks=10000):
-    X_src = []  # Para los datos del encoder (bloques)
-    X_tgt = []  # Para los datos del decoder (acciones)
-    Y = []      # Para las predicciones (vectores one-hot)
-    ids = []    # Para las ids de los bloques
+    states = parse_actions(filename, blocks_info)
 
-    blocks_data = parse_blocks(filename)
-    if len(blocks_data) < min_blocks: return X_src, X_tgt, Y, ids
+    # --- Mapa global de índices (basado en X_src) ---
+    block_ids = list(blocks_info.keys())
+    global_index_map = {block_id: idx for idx, block_id in enumerate(block_ids)}
 
-    actions_data = parse_actions(filename)
-    seq_size = get_w(filename)**2
+    # --- X_src fijo ---
+    X_src = np.array(
+        [blocks_info[b_id].metrics for b_id in block_ids],
+        dtype=float
+    )
 
-    # Eliminar ID de cada bloque (irrelevante)
-    blocks_data = [sub[1:] for sub in blocks_data]
+    # --- Inicialización ---
+    X_src_all, X_tgt_all, Y_all, placed_all, coords_masked = [], [], [], [], []
+    placed_indices = []   # índices globales (en X_src)
+    coords_all = []       # coordenadas correspondientes a esos bloques
 
-    # Recorremos cada bloque
-    for action in actions_data:
-        # Extraemos las características del bloque (el tercer elemento en cada bloque)
-        #features = [entry[1] for entry in action[2]] # Obtiene las características de cada tupla en el bloque
-        features = [entry[1][1:] for entry in action[2]]
+    # --- Recorremos los estados ---
+    for state in states:
+        chosen_block = state.chosen_action.block
+        chosen_id = chosen_block.block_id
 
-        # Consideramos solo cuando bloques = w2
-        if len(features) < seq_size: continue
+        # --- Validar bloque ---
+        if chosen_id not in global_index_map:
+            continue
+        chosen_index = global_index_map[chosen_id]
 
-        # Extraemos el id del bloque elegido (primer valor de la tupla)
-        selected_id = action[0]
+        # --- Acciones disponibles ---
+        X_tgt = np.array([[global_index_map[action.block.block_id]] + action.metrics[1:] for action in state.actions], dtype=float)
 
-        # Crear el vector one-hot para Y
-        one_hot = [0] * seq_size  # Inicializa un vector con ceros
+        # --- Validaciones ---
+        if len(X_tgt) < min_actions:
+            continue
+        if not np.isfinite(X_tgt).all():
+            continue
 
-        # Encontrar la posición de block_id en las tuplas de cada bloque
-        best_block_idx = None
-        for i, entry in enumerate(action[2]):
-            if entry[0] == selected_id:  # Compara el id de la tupla con el id del bloque
-                one_hot[i] = 1  # Marca la posición correspondiente en el vector one-hot
-                best_block_idx = i
+        # --- Etiqueta one-hot ---
+        num_actions = len(state.actions)
+        Y = np.zeros(num_actions, dtype=float)
+        for i, action in enumerate(state.actions):
+            if action.block.block_id == chosen_id:
+                Y[i] = 1.0
                 break
 
-        # Eliminamos casos donde eval del mejor bloque se repite
-        repeated = False
-        best_block_eval = action[2][i][1][0]
-        for idx, entry in enumerate(action[2]):
-            if entry[1][0] == best_block_eval and idx != best_block_idx:
-                repeated = True
-                break
-        if repeated: continue
+        # --- Agregar estado ---
+        X_src_all.append(X_src)
+        X_tgt_all.append(X_tgt)
+        Y_all.append(Y)
 
-        # Añadimos las características de este bloque a X
-        X_src.append(blocks_data)
-        X_tgt.append(features)
+        # --- Vector placed (bloques ya colocados) ---
+        placed = np.full(min_actions, -1, dtype=int)
+        for idx, block_idx in enumerate(placed_indices[:min_actions]):
+            placed[idx] = block_idx  # índice directo en X_src
+        placed_all.append(placed)
 
-        # Añadir el vector one-hot a Y
-        Y.append(one_hot)
+        # --- coords_masked: coordenadas relativas alineadas con placed ---
+        coords_mat = np.zeros((min_actions, 3), dtype=float)
+        current_coords = np.array(state.coords, dtype=float)
 
-        # Añadir las ids del bloque a block_ids
-        action_ids = [entry[0] for entry in action[2]]  # Extrae solo el ID de cada tupla
-        ids.append(action_ids)
+        for idx, block_idx in enumerate(placed_indices[:min_actions]):
+            # Coordenadas relativas = bloque anterior - bloque actual
+            coords_mat[idx] = coords_all[idx] - current_coords
 
-    return X_src, X_tgt, Y, ids
+        coords_masked.append(coords_mat)
 
+        # Registrar el bloque actual como colocado
+        coords = np.array(state.coords, dtype=float)
+        placed_indices.append(chosen_index)
+        coords_all.append(coords)
+
+    return X_src_all, X_tgt_all, Y_all, placed_all, coords_masked
 
 def generate_data_from_folder(folder_path):
-    all_X_src = []  # Lista para almacenar entradas del encoder
-    all_X_tgt = []  # Lista para almacenar entradas del decoder
-    all_Y = []  # Lista para almacenar todos los vectores one-hot
-    all_ids = []  # Lista para almacenar todos los block_ids
+    all_X_src = []      # Entradas del encoder (bloques estáticos)
+    all_X_tgt = []      # Entradas del decoder (acciones por estado)
+    all_Y = []          # Etiquetas one-hot
+    all_placed = []     # Índices de bloques colocados
+    all_coords = []     # Coordenadas de bloques colocados
 
     # Iterar sobre todos los archivos en la carpeta
     for filename in os.listdir(settings.output_folder_path + folder_path):
@@ -217,28 +289,34 @@ def generate_data_from_folder(folder_path):
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
-            X_src, X_tgt, Y, ids = generate_train_data(file_path)
+            X_src, X_tgt, Y, placed, coords = generate_train_data(file_path)
 
             # Agregar los datos del archivo actual a las listas generales
             all_X_src.extend(X_src)
             all_X_tgt.extend(X_tgt)
             all_Y.extend(Y)
-            all_ids.extend(ids)
+            all_placed.extend(placed)
+            all_coords.extend(coords)
 
     # Definir el nombre del archivo de salida basado en el nombre de la carpeta
-    folder_name = os.path.basename(folder_path)  # Obtiene el nombre de la carpeta
-    output_filename = folder_name.split('.')[0] + ".data"  # Eliminar la extensión .out si está presente y agregar .data
-    output_path = data_folder + output_filename
+    folder_name = os.path.basename(folder_path)
+    output_filename = folder_name.split('.')[0] + ".data"
+    output_path = settings.data_folder_path + output_filename
 
-    # Guardar los datos en el archivo (en este caso, usaremos pickle para guardar en formato binario)
+    # Guardar los datos (ahora con placed y coords)
     with open(output_path, "wb") as f:
-        pickle.dump({"X_src": all_X_src, "X_tgt": all_X_tgt, "Y": all_Y, "ids": all_ids}, f)
+        pickle.dump({
+            "X_src": all_X_src,
+            "X_tgt": all_X_tgt,
+            "Y": all_Y,
+            "placed": all_placed,
+            "coords": all_coords
+        }, f)
 
     print(f"Datos guardados en: {output_path}")
 
-
 def load_data_from_file(filename):
-    file_path = f"data/{filename}"
+    file_path = settings.data_folder_path + filename
     
     # Abrir el archivo .data y cargar los datos
     with open(file_path, "rb") as f:
@@ -248,15 +326,16 @@ def load_data_from_file(filename):
     X_src = data["X_src"]
     X_tgt = data["X_tgt"]
     Y = data["Y"]
-    ids = data["ids"]
+    placed = data["placed"]
+    coords = data["coords"]
 
-    return X_src, X_tgt, Y, ids
+    return X_src, X_tgt, Y, placed, coords
 
 def join_data_files(filenames, output_filename):
     merged_data = {}  # Diccionario donde se unirán todos los datos
 
     for filename in filenames:
-        file_path = f"data/{filename}"
+        file_path = settings.data_folder_path + filename
 
         # Abrir el archivo .data y cargar los datos
         with open(file_path, "rb") as f:

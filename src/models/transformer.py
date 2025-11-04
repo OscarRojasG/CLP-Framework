@@ -35,9 +35,9 @@ class Transformer(EncoderDecoderModel):
                 'self_attn': nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout_rate, batch_first=True),
                 'cross_attn': nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout_rate, batch_first=True),
                 'ffn': nn.Sequential(
-                    nn.Linear(embed_dim, 512),
+                    nn.Linear(embed_dim, 128),
                     nn.ReLU(),
-                    nn.Linear(512, embed_dim)
+                    nn.Linear(128, embed_dim)
                 ),
                 'norm1': nn.LayerNorm(embed_dim),
                 'norm2': nn.LayerNorm(embed_dim),

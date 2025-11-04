@@ -19,7 +19,7 @@ class BlockData:
         return f"Block(id={self.block_id})"
 
 
-class Action:
+class ActionData:
     """Acción que consiste en colocar un bloque con ciertas métricas."""
     def __init__(self, block: BlockData, metrics: List[float]):
         self.block = block          # BlockData
@@ -29,9 +29,9 @@ class Action:
         return f"Action(block={self.block.block_id}, metrics={self.metrics})"
 
 
-class State:
+class StateData:
     """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
-    def __init__(self, coords: Tuple[int, int, int], actions: List[Action], chosen_action: Action = None):
+    def __init__(self, coords: Tuple[int, int, int], actions: List[ActionData], chosen_action: ActionData = None):
         self.coords = coords                # (x, y, z)
         self.actions = actions              # lista de Action
         self.chosen_action = chosen_action  # Action elegida (opcional)
@@ -116,7 +116,7 @@ def parse_blocks(filepath: str) -> dict[int, BlockData]:
 
     return blocks_info
 
-def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State]:
+def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[StateData]:
     """
     Parsea un archivo de acciones y devuelve una lista de objetos State.
     Cada State contiene:
@@ -136,7 +136,7 @@ def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[Stat
 
         chosen_block_id, coords, actions_raw = block_tuple
         actions = [
-            Action(blocks_info[act_id], act_metrics)
+            ActionData(blocks_info[act_id], act_metrics)
             for act_id, act_metrics in actions_raw
             if act_id in blocks_info
         ]
@@ -146,7 +146,7 @@ def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[Stat
         if chosen_action is None:
             raise ValueError(f"Bloque elegido {chosen_block_id} no aparece entre las acciones disponibles.")
 
-        results.append(State(coords, actions, chosen_action))
+        results.append(StateData(coords, actions, chosen_action))
 
     with open(filepath, "r") as f:
         for line in f:
@@ -177,6 +177,44 @@ def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[Stat
     finalize_block(current_block)
     return results
 
+def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[ActionData]:
+    """
+    Parsea un archivo que contiene únicamente líneas del tipo:
+        action block:<id> eval:<valores>
+
+    Devuelve una lista de ActionData, cada uno asociado a su BlockData.
+    """
+    actions = []
+    re_action = re.compile(r"action block:(\d+)\s+eval:\s+([0-9eE+.\s\-infINF]+)")
+
+    with open(filepath, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            m = re_action.match(line)
+            if not m:
+                continue
+
+            act_id = int(m.group(1))
+            eval_str = m.group(2)
+            tokens = eval_str.split()
+            evals = []
+            for tok in tokens:
+                try:
+                    evals.append(float(tok))
+                except ValueError:
+                    evals.append(float("nan"))
+
+            if act_id in blocks_info:
+                actions.append(ActionData(blocks_info[act_id], evals))
+            else:
+                # Si el block_id no está en blocks_info, lo ignoramos
+                print(f"[WARN] Block ID {act_id} no encontrado en blocks_info, se ignora.")
+
+    return actions
+
 def get_w(filename: str) -> int:
     with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
@@ -204,7 +242,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
     if len(blocks_info) < min_blocks:
         return [], [], [], [], []
 
-    states = parse_actions(filename, blocks_info)
+    states = parse_states(filename, blocks_info)
 
     # --- Mapa global de índices (basado en X_src) ---
     block_ids = list(blocks_info.keys())

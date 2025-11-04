@@ -1,9 +1,10 @@
 from torch import nn
-from .env import Environment, State
+
+from training import get_predictions
+from .env import Environment
 from abc import ABC, abstractmethod
 import subprocess
 from . import settings
-from src.data_preprocessing import feature_expansion, normalize_input
 import torch
 
 class Solver(ABC):
@@ -30,17 +31,22 @@ class ModelSolver(Solver):
             if len(valid_actions) == 0: break # Estado completado
 
             # Convertir acciones a vectores
-            action_vec = [[action.action_vec for action in valid_actions]]
-            action_vec = feature_expansion(action_vec)
-            action_vec = normalize_input(action_vec)
-            action_vec = torch.tensor(action_vec, dtype=torch.float32)
+            action_vec = [action.action_vec for action in valid_actions]
+            X_tgt = torch.tensor([action_vec], dtype=torch.float32)
+
+            # Datos
+            X_src = torch.tensor([state.get_blocks()], dtype=torch.float32)
+            placed = torch.tensor([state.get_placed()], dtype=torch.float32)
+            coords = torch.tensor([state.get_coords()], dtype=torch.float32)
 
             # Predecir la mejor acción
-            action_idx = self.model(action_vec).argmax()
-            seledted_action = valid_actions[action_idx]
+            output = get_predictions(self.model, X_src, X_tgt, placed, coords, apply_softmax=True)
+            action_idx = output.argmax()
+            prob = output[0, action_idx]
+            selected_action = valid_actions[action_idx]
 
             # Aplicar la acción
-            state = env.state_transition(state, seledted_action)
+            state = env.state_transition(state, selected_action)
 
         state.close()
         return state.get_volume_ratio()

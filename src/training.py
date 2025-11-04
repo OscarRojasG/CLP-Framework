@@ -173,16 +173,15 @@ def create_subsets(datasets, train_size, train_weights, test_size, test_weights,
     
     return train_subset, test_subsets
 
+def get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch, apply_softmax=False):
+    if isinstance(model, EncoderDecoderPEModel):
+        return model.predict(X_src_batch, X_tgt_batch, placed_batch, coords_batch, apply_softmax)
+    if isinstance(model, EncoderDecoderModel):
+        return model.predict(X_src_batch, X_tgt_batch, apply_softmax)
+    else:
+        return model.predict(X_tgt_batch, apply_softmax)
 
 def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patience, seed=42) -> tuple[nn.Module, Metrics, list[Metrics]]:
-    def get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch):
-        if isinstance(model, EncoderDecoderPEModel):
-            return model(X_src_batch, X_tgt_batch, placed_batch, coords_batch)
-        if isinstance(model, EncoderDecoderModel):
-            return model(X_src_batch, X_tgt_batch)
-        else:
-            return model(X_tgt_batch)
-
     # --- CONFIGURAR DISPOSITIVO ---
     device = torch.device("cuda" if torch.cuda.is_available() 
                           else "mps" if torch.backends.mps.is_available() 

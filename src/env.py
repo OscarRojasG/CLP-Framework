@@ -1,43 +1,155 @@
 import subprocess
-import fcntl
-import os
+import numpy as np
 
-state_folder_path = "states/"
-
-class State:
+class State():
     def __init__(self, process: subprocess.Popen):
         self.process = process  # Referencia al proceso persistente
-        self.occupied_volume, self.total_volume = self.update()
+        self.blocks, self.block_index_dict = self.process_get_blocks()
+        self.process_update()
+
+    def process_get_blocks(self):
+        cmd = f"-B\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+
+        # Diccionario de índices
+        block_index_dict = {}
+
+        # Leer hasta que no haya más salida (bloquea si el proceso no termina)
+        output = []
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line == "END":
+                break
+            parts = line.split()
+            if len(parts) > 1:
+                # Ignora el primer elemento (block_id)
+                metrics = [float(x) for x in parts[1:]]
+                block_index_dict[int(parts[0])] = len(output)
+                output.append(metrics)
+        return np.array(output), block_index_dict
+    
+    def process_get_current_coords(self):
+        cmd = "-C\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+
+        # Leer una sola línea del stdout
+        line = self.process.stdout.readline().strip()
+
+        # Separar los valores y convertirlos a float
+        coords = np.array([float(x) for x in line.split()])
+        return coords
+
+    def process_get_placed_blocks(self, block_index_dict, current_coords, padding=64):
+        cmd = "-P\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+
+        placed = []
+        placed_coords = []
+
+        # Leer todas las líneas hasta que no haya más salida
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line == "END":
+                break
+
+            parts = line.split()
+
+            block_id = int(parts[0])
+            coords = np.array([float(parts[1]), float(parts[2]), float(parts[3])]) - current_coords
+
+            placed.append(block_index_dict[block_id])
+            placed_coords.append(coords)
+
+        # Aplicar padding si hay menos de `padding` bloques
+        if len(placed) < padding:
+            placed.extend([-1] * (padding - len(placed)))
+            placed_coords.extend([[0.0, 0.0, 0.0]] * (padding - len(placed_coords)))
+
+        return np.array(placed), np.array(placed_coords)
+    
+    def process_get_actions(self):
+        cmd = "-A\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+
+        block_ids = []
+        metrics = []
+
+        # Leer la salida línea por línea
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line == "END":
+                break
+
+            parts = line.split()
+
+            block_id = int(parts[0])
+            values = [float(x) for x in parts[1:]]
+
+            block_ids.append(block_id)
+            metrics.append(values)
+
+        # Convertir la lista de métricas a un array de NumPy
+        metrics_array = np.array(metrics, dtype=float)
+
+        return metrics_array, block_ids
+    
+    def process_get_volume_ratio(self):
+        cmd = "-V\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+
+        # Leer una sola línea y convertirla a float
+        line = self.process.stdout.readline().strip()
+        value = float(line)
+
+        return value
+    
+    def process_update(self):
+        self.volume_ratio = self.process_get_volume_ratio()
+        self.actions, self.action_blocks_id = self.process_get_actions()
+        if len(self.actions) == 0: return
+
+        self.coords = self.process_get_current_coords()
+        self.placed, self.coords_placed = self.process_get_placed_blocks(self.block_index_dict, self.coords)
+    
+    def get_blocks(self):
+        return self.blocks
+    
+    def get_placed(self):
+        return self.placed
+    
+    def get_coords(self):
+        return self.coords_placed
+    
+    def get_actions(self, add_block_index=False):
+        actions = []
+        for i in range(len(self.actions)):
+            block_id = self.action_blocks_id[i]
+            action = self.actions[i]
+            if add_block_index:
+                action = np.insert(action, 0, self.block_index_dict[block_id], axis=0)
+            actions.append(Action(block_id, action))
+        return actions
+    
+    def get_volume_ratio(self):
+        return self.volume_ratio
 
     def close(self):
         self.process.stdin.write("-Q\n")
         self.process.stdin.flush()
-
-    def update(self):
-        self.process.stdin.write("-V\n")
-        self.process.stdin.flush()
-
-        line = self.process.stdout.readline().strip()
-        parts = line.split()
-
-        try:
-            occupied_volume = int(float(parts[0]))
-            total_volume = int(float(parts[1]))
-        except Exception:
-            raise RuntimeError("Error al actualizar datos del estado.")
-        
-        return occupied_volume, total_volume
-    
-    def get_total_volume(self):
-        return self.total_volume
-    
-    def get_occupied_volume(self):
-        return self.occupied_volume
-    
-    def get_volume_ratio(self):
-        if self.total_volume == 0:
-            return 0.0
-        return (self.occupied_volume / self.total_volume) * 100
     
 class Action:
     def __init__(self, block_id, action_vec):
@@ -69,57 +181,24 @@ class Environment:
         return State(process)
 
     @staticmethod
-    def get_valid_actions(state: State) -> list[Action]:
-        """
-        Solicita al proceso las acciones válidas a partir del estado actual.
-        Formato esperado por línea (separado por espacios):
-            block_id val1 val2 val3 ... valX
-        La salida siempre termina con una línea "END".
-        """
-        process = state.process
-
-        process.stdin.write("-A\n")
-        process.stdin.flush()
-
-        actions = []
-        end_found = False
-
-        while True:
-            line = process.stdout.readline()
-            if not line:
-                raise RuntimeError("Salida inesperada: no se encontró 'END'.")
-
-            line = line.strip()
-
-            if line == "END":
-                end_found = True
-                break
-
-            parts = line.split()
-            try:
-                block_id = int(parts[0])
-                action_vec = [float(v) for v in parts[1:5]]
-            except Exception:
-                raise RuntimeError("Formato de salida inválido en la respuesta de BSG_ENV.")
-
-            actions.append(Action(block_id=block_id, action_vec=action_vec))
-
-        if not end_found:
-            raise RuntimeError("Salida inesperada: no se encontró 'END'.")
-
-        if not actions:
-            return []
-
-        return actions
+    def get_valid_actions(state: State, add_block_index: bool) -> list[Action]:
+        return state.get_actions(add_block_index)
 
     @staticmethod
     def state_transition(state: State, action: Action):
         """
-        Envía una acción al proceso para realizar la transición de estado.
+        Envía una acción al proceso para realizar la transición de estado
+        y devuelve el valor flotante 'reward' resultante.
         """
         process = state.process
         cmd = f"-T {action.block_id}\n"
         process.stdin.write(cmd)
         process.stdin.flush()
 
-        return State(process)
+        # Leer una línea del stdout con el reward)
+        line = process.stdout.readline().strip()
+        reward = float(line)
+
+        # Actualizar variables de estado
+        state.process_update()
+        return reward

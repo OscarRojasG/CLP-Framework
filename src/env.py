@@ -31,20 +31,8 @@ class State():
                 block_index_dict[int(parts[0])] = len(output)
                 output.append(metrics)
         return np.array(output), block_index_dict
-    
-    def process_get_current_coords(self):
-        cmd = "-C\n"
-        self.process.stdin.write(cmd)
-        self.process.stdin.flush()
 
-        # Leer una sola línea del stdout
-        line = self.process.stdout.readline().strip()
-
-        # Separar los valores y convertirlos a float
-        coords = np.array([float(x) for x in line.split()])
-        return coords
-
-    def process_get_placed_blocks(self, block_index_dict, current_coords, padding=64):
+    def process_get_placed_blocks(self, block_index_dict, padding=64):
         cmd = "-P\n"
         self.process.stdin.write(cmd)
         self.process.stdin.flush()
@@ -64,7 +52,7 @@ class State():
             parts = line.split()
 
             block_id = int(parts[0])
-            coords = np.array([float(parts[1]), float(parts[2]), float(parts[3])]) - current_coords
+            coords = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
 
             placed.append(block_index_dict[block_id])
             placed_coords.append(coords)
@@ -96,7 +84,8 @@ class State():
             parts = line.split()
 
             block_id = int(parts[0])
-            values = [float(x) for x in parts[1:]]
+            # [2:] Ignoramos block_id + eval (VCS)
+            values = [float(x) for x in parts[2:]]
 
             block_ids.append(block_id)
             metrics.append(values)
@@ -122,8 +111,7 @@ class State():
         self.actions, self.action_blocks_id = self.process_get_actions()
         if len(self.actions) == 0: return
 
-        self.coords = self.process_get_current_coords()
-        self.placed, self.coords_placed = self.process_get_placed_blocks(self.block_index_dict, self.coords)
+        self.placed, self.coords_placed = self.process_get_placed_blocks(self.block_index_dict)
     
     def get_blocks(self):
         return self.blocks

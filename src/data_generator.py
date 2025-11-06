@@ -18,7 +18,6 @@ class BlockData:
     def __repr__(self):
         return f"Block(id={self.block_id})"
 
-
 class ActionData:
     """Acción que consiste en colocar un bloque con ciertas métricas."""
     def __init__(self, block: BlockData, metrics: List[float]):
@@ -27,14 +26,18 @@ class ActionData:
 
     def __repr__(self):
         return f"Action(block={self.block.block_id}, metrics={self.metrics})"
-
+    
+class PlacedBlock:
+    def __init__(self, block: BlockData, coords: Tuple[int, int, int]):
+        self.block = block
+        self.coords = coords
 
 class StateData:
     """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
-    def __init__(self, coords: Tuple[int, int, int], actions: List[ActionData], chosen_action: ActionData = None):
-        self.coords = coords                # (x, y, z)
-        self.actions = actions              # lista de Action
-        self.chosen_action = chosen_action  # Action elegida (opcional)
+    def __init__(self, actions: List[ActionData], chosen_action: ActionData, placed: List[PlacedBlock]):            
+        self.actions = actions              
+        self.chosen_action = chosen_action
+        self.placed = placed   
 
     def __repr__(self):
         chosen = self.chosen_action.block.block_id if self.chosen_action else None
@@ -90,130 +93,83 @@ def run_file_instances_parallel(file_path, w=8, max_workers=None):
             executor.submit(run_instance, file_path, i, w, base_folder)
 
 def parse_blocks(filepath: str) -> dict[int, BlockData]:
-    """Lee un archivo y devuelve un diccionario {block_id: BlockData}."""
+    """Lee un archivo con formato de bloques y devuelve {block_id: BlockData}."""
     blocks_info = {}
+    start_reading = False
 
     with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
 
-            # Solo procesar líneas con formato "block:XXXX metrics:"
-            if line.startswith("block:") and "metrics:" in line:
-                try:
-                    # Ejemplo: "block:2886 metrics: 0.46 0.34 0.68 ..."
-                    parts = line.split("metrics:")
-                    block_id_str = parts[0].replace("block:", "").strip()
-                    block_id = int(block_id_str)
+            # Esperar hasta encontrar "BLOCKS"
+            if not start_reading:
+                if line == "BLOCKS":
+                    start_reading = True
+                continue
 
-                    # Convertir los valores numéricos a float
-                    metrics = list(map(float, parts[1].strip().split()))
+            # Terminar si hay una línea vacía
+            if not line:
+                break
 
-                    # Guardar en el diccionario
-                    blocks_info[block_id] = BlockData(block_id, metrics)
-
-                except Exception as e:
-                    print(f"Error parsing line: {line} -> {e}")
+            parts = line.split()
+            block_id = int(parts[0])
+            metrics = list(map(float, parts[1:]))
+            blocks_info[block_id] = BlockData(block_id, metrics)
 
     return blocks_info
 
 def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[StateData]:
-    """
-    Parsea un archivo de acciones y devuelve una lista de objetos State.
-    Cada State contiene:
-      - coordenadas de inserción
-      - lista de posibles acciones (Action)
-      - la acción elegida (Action)
-    """
     results = []
-    current_block = None
-
-    re_selected = re.compile(r"selected block:(\d+)\s+space:\((\d+),(\d+),(\d+)\)")
-    re_action = re.compile(r"action block:(\d+)\s+eval:\s+([0-9eE+.\s\-infINF]+)")
-
-    def finalize_block(block_tuple):
-        if not block_tuple:
-            return
-
-        chosen_block_id, coords, actions_raw = block_tuple
-        actions = [
-            ActionData(blocks_info[act_id], act_metrics)
-            for act_id, act_metrics in actions_raw
-            if act_id in blocks_info
-        ]
-
-        # Buscar la acción elegida entre las posibles
-        chosen_action = next((a for a in actions if a.block.block_id == chosen_block_id), None)
-        if chosen_action is None:
-            raise ValueError(f"Bloque elegido {chosen_block_id} no aparece entre las acciones disponibles.")
-
-        results.append(StateData(coords, actions, chosen_action))
 
     with open(filepath, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+        lines = [line.strip() for line in f if line.strip()]
 
-            m_sel = re_selected.match(line)
-            if m_sel:
-                finalize_block(current_block)
-                block_id = int(m_sel.group(1))
-                coords = tuple(map(int, m_sel.groups()[1:]))
-                current_block = (block_id, coords, [])
-                continue
+    i = 0
+    n = len(lines)
+    while i < n:
+        if lines[i] == "Actions":
+            i += 1
+            actions_raw = []
 
-            m_act = re_action.match(line)
-            if m_act and current_block:
-                act_id = int(m_act.group(1))
-                tokens = m_act.group(2).split()
-                nums = []
-                for tok in tokens:
-                    try:
-                        nums.append(float(tok))
-                    except ValueError:
-                        nums.append(float("nan"))
-                current_block[2].append((act_id, nums))
+            # --- Actions ---
+            while i < n and lines[i] != "Placed":
+                parts = lines[i].split()
+                act_id = int(parts[0])
+                metrics = list(map(float, parts[1:]))
+                actions_raw.append((act_id, metrics))
+                i += 1
 
-    finalize_block(current_block)
+            # --- Placed (puede estar vacío) ---
+            placed_blocks = []
+            if i < n and lines[i] == "Placed":
+                i += 1
+                while i < n and lines[i] != "Selected Block":
+                    parts = lines[i].split()
+                    block_id = int(parts[0])
+                    coords = tuple(map(float, parts[1:4]))
+                    placed_blocks.append(PlacedBlock(blocks_info[block_id], coords))
+                    i += 1
+
+            # --- Selected Block ---
+            i += 1  # saltar "Selected Block"
+            chosen_block_id = int(lines[i])
+            i += 1
+
+            # --- Crear objetos ---
+            actions = [
+                ActionData(blocks_info[act_id], metrics)
+                for act_id, metrics in actions_raw
+            ]
+            chosen_action = next(
+                a for a in actions if a.block.block_id == chosen_block_id
+            )
+
+            results.append(StateData(actions, chosen_action, placed_blocks))
+
+        else:
+            i += 1
+
     return results
-
-def parse_actions(filepath: str, blocks_info: Dict[int, BlockData]) -> List[ActionData]:
-    """
-    Parsea un archivo que contiene únicamente líneas del tipo:
-        action block:<id> eval:<valores>
-
-    Devuelve una lista de ActionData, cada uno asociado a su BlockData.
-    """
-    actions = []
-    re_action = re.compile(r"action block:(\d+)\s+eval:\s+([0-9eE+.\s\-infINF]+)")
-
-    with open(filepath, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-
-            m = re_action.match(line)
-            if not m:
-                continue
-
-            act_id = int(m.group(1))
-            eval_str = m.group(2)
-            tokens = eval_str.split()
-            evals = []
-            for tok in tokens:
-                try:
-                    evals.append(float(tok))
-                except ValueError:
-                    evals.append(float("nan"))
-
-            if act_id in blocks_info:
-                actions.append(ActionData(blocks_info[act_id], evals))
-            else:
-                # Si el block_id no está en blocks_info, lo ignoramos
-                print(f"[WARN] Block ID {act_id} no encontrado en blocks_info, se ignora.")
-
-    return actions
 
 def get_w(filename: str) -> int:
     with open(filename, 'r', encoding='utf-8') as f:
@@ -256,20 +212,11 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
 
     # --- Inicialización ---
     X_src_all, X_tgt_all, Y_all, placed_all, coords_masked = [], [], [], [], []
-    placed_indices = []   # índices globales (en X_src)
-    coords_all = []       # coordenadas correspondientes a esos bloques
 
     # --- Recorremos los estados ---
-    for state in states:
-        chosen_block = state.chosen_action.block
-        chosen_id = chosen_block.block_id
-
-        # --- Validar bloque ---
-        if chosen_id not in global_index_map:
-            continue
-        chosen_index = global_index_map[chosen_id]
-
+    for h, state in enumerate(states):
         # --- Acciones disponibles ---
+        # [1:] Ignoramos eval (VCS)
         X_tgt = np.array([[global_index_map[action.block.block_id]] + action.metrics[1:] for action in state.actions], dtype=float)
 
         # --- Validaciones ---
@@ -282,7 +229,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         num_actions = len(state.actions)
         Y = np.zeros(num_actions, dtype=float)
         for i, action in enumerate(state.actions):
-            if action.block.block_id == chosen_id:
+            if action.block.block_id == state.chosen_action.block.block_id:
                 Y[i] = 1.0
                 break
 
@@ -293,26 +240,24 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
 
         # --- Vector placed (bloques ya colocados) ---
         placed = np.full(min_actions, -1, dtype=int)
-        for idx, block_idx in enumerate(placed_indices[:min_actions]):
-            placed[idx] = block_idx  # índice directo en X_src
+        for idx, placed_block in enumerate(state.placed):
+            placed[idx] = global_index_map[placed_block.block.block_id]  # índice directo en X_src
         placed_all.append(placed)
 
         # --- coords_masked: coordenadas relativas alineadas con placed ---
         coords_mat = np.zeros((min_actions, 3), dtype=float)
-        current_coords = np.array(state.coords, dtype=float)
-
-        for idx, block_idx in enumerate(placed_indices[:min_actions]):
-            # Coordenadas relativas = bloque anterior - bloque actual
-            coords_mat[idx] = coords_all[idx] - current_coords
+        for idx, placed_block in enumerate(state.placed):
+            coords_mat[idx] = placed_block.coords
 
         coords_masked.append(coords_mat)
 
-        # Registrar el bloque actual como colocado
-        coords = np.array(state.coords, dtype=float)
-        placed_indices.append(chosen_index)
-        coords_all.append(coords)
-
-    return X_src_all, X_tgt_all, Y_all, placed_all, coords_masked
+    return (
+        np.array(X_src_all, dtype=np.float32),
+        np.array(X_tgt_all, dtype=np.float32),
+        np.array(Y_all, dtype=np.float32),
+        np.array(placed_all, dtype=np.int32),
+        np.array(coords_masked, dtype=np.float32)
+    )
 
 def generate_data_from_folder(folder_path):
     all_X_src = []      # Entradas del encoder (bloques estáticos)

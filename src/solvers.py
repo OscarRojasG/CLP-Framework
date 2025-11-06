@@ -1,11 +1,11 @@
 from torch import nn
-
-from training import get_predictions
+from .training import get_predictions
 from .env import Environment
 from abc import ABC, abstractmethod
 import subprocess
 from . import settings
 import torch
+from .models.base.encoder_decoder_pe import EncoderDecoderPEModel
 
 class Solver(ABC):
     @abstractmethod
@@ -17,12 +17,13 @@ class ModelSolver(Solver):
         self.model = model
 
     def solve(self, instance_file, instance_number, w: int) -> int:
-        env = Environment
+        env = Environment()
         state = env.initial_state(instance_file, instance_number, w)
 
         while True:
             try:
-                valid_actions = env.get_valid_actions(state)
+                add_block_index = isinstance(self.model, EncoderDecoderPEModel)
+                valid_actions = env.get_valid_actions(state, add_block_index)
             except Exception as e:
                 print("Error obteniendo acciones válidas:", e)
                 state.close()
@@ -42,14 +43,13 @@ class ModelSolver(Solver):
             # Predecir la mejor acción
             output = get_predictions(self.model, X_src, X_tgt, placed, coords, apply_softmax=True)
             action_idx = output.argmax()
-            prob = output[0, action_idx]
             selected_action = valid_actions[action_idx]
 
             # Aplicar la acción
-            state = env.state_transition(state, selected_action)
+            env.state_transition(state, selected_action)
 
         state.close()
-        return state.get_volume_ratio()
+        return state.get_volume_ratio() * 100
 
 class BSGSolver(Solver):
     def solve(self, instance_file, instance_number, w: int) -> int:

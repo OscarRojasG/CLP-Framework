@@ -135,11 +135,15 @@ def load_model(empty_model: nn.Module, filename):
 
 def load_dataset(dataset_file):
     X_src, X_tgt, Y, placed, coords = load_data_from_file(dataset_file)
-    X_src = torch.tensor(X_src, dtype=torch.float32)
-    X_tgt = torch.tensor(X_tgt, dtype=torch.float32)
-    Y = torch.tensor(Y, dtype=torch.float32)
-    placed = torch.tensor(placed, dtype=torch.float32)
-    coords = torch.tensor(coords, dtype=torch.float32)
+    X_src = torch.tensor(np.array(X_src), dtype=torch.float32)
+    X_tgt = torch.tensor(np.array(X_tgt), dtype=torch.float32)
+    Y = torch.tensor(np.array(Y), dtype=torch.float32)
+    placed = torch.tensor(np.array(placed), dtype=torch.float32)
+    coords = torch.tensor(np.array(coords), dtype=torch.float32)
+
+    # 🔧 Reemplazar todos los features (excepto el primero) por ceros
+    X_tgt[..., 1:3] = 0.0
+
     return NamedDataset(dataset_file, X_src, X_tgt, Y, placed, coords)
 
 def create_train_subsets(train_datasets, train_size, train_weights, seed=42):

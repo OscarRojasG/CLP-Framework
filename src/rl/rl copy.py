@@ -1,10 +1,11 @@
-from .env import Environment, State, Action
-from .training import get_predictions
+from ..env import Environment, State, Action
+from ..training import get_predictions
 import torch
 from torch import optim
-from .models.base.encoder_decoder_pe import EncoderDecoderPEModel
+from torch.distributions import Categorical
+from ..models.base.encoder_decoder_pe import EncoderDecoderPEModel
 
-env = Environment
+env = Environment()
 
 # Generamos datos RL
 def generate_rl_data(model, instance_file, instance_number):
@@ -39,12 +40,15 @@ def generate_rl_data(model, instance_file, instance_number):
 
         # Predecir la mejor acción
         output = get_predictions(model, X_src, X_tgt, placed, coords, apply_softmax=True)
-        action_idx = output.argmax()
-        prob = output[0, action_idx]
+        output = output.squeeze(0)
+        dist = Categorical(output)
+        action_idx = dist.sample() 
+        prob = output[action_idx]
         selected_action = valid_actions[action_idx]
 
         # Aplicar la acción
         reward = env.state_transition(state, selected_action)
+
 
         # Acumular variables
         rewards.append(reward)

@@ -17,10 +17,6 @@ class BlockEncoder(nn.Module):
         )
 
     def forward(self, X_src):
-        """
-        X_src: (num_blocks, src_dim)
-        -> (num_blocks, d_model)
-        """
         return self.encoder(X_src)
 
 # ======================================================
@@ -37,16 +33,12 @@ class ActionEncoder(nn.Module):
         )
 
     def forward(self, X_action):
-        """
-        X_action: (num_actions, action_dim)
-        -> (num_actions, d_model)
-        """
         return self.net(X_action)
-    
+
 # ======================================================
 # --- Resumen información global encoder ---
 # ======================================================
-    
+
 class GlobalAggregator(nn.Module):
     def __init__(self, d_model, mode="mean"):
         super().__init__()
@@ -56,20 +48,16 @@ class GlobalAggregator(nn.Module):
             self.proj = nn.Linear(d_model, 1)
 
     def forward(self, E_src):
-        """
-        E_src: (B, N_blocks, d_model)
-        Devuelve: (B, d_model)
-        """
         if self.mode == "mean":
             return E_src.mean(dim=1)
         elif self.mode == "max":
             return E_src.max(dim=1).values
         elif self.mode == "attention":
-            attn = torch.softmax(self.proj(E_src), dim=1)  # (B, N, 1)
+            attn = torch.softmax(self.proj(E_src), dim=1)
             return (E_src * attn).sum(dim=1)
 
 # ======================================================
-# --- Modelo completo con cross-attention ---
+# --- Modelo Actor-Critic con cross-attention ---
 # ======================================================
 
 class Transformer(EncoderDecoderPEModel):
@@ -83,23 +71,29 @@ class Transformer(EncoderDecoderPEModel):
         self.global_agg = GlobalAggregator(d_model, mode="mean")
 
         # Decoder Transformer
-        decoder_layer = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward=4*d_model, dropout=dropout, batch_first=True)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model, nhead, dim_feedforward=4*d_model,
+            dropout=dropout, batch_first=True
+        )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
-        # proyectar concatenación a d_model
+        # Proyección bloque + acción (d_model*2) a d_model
+        self.action_block_proj = nn.Linear(self.d_model * 2, self.d_model)
+
+        # proyectar concatenación memory + coords a d_model
         self.coord_proj = nn.Linear(self.d_model + 3, self.d_model)
 
-        # Proyección final a logit
+        # Cabeza de actor (para logits)
         self.output_head = nn.Linear(d_model, 1)
 
+        # Nueva cabeza de crítico (para valor del estado)
+        self.value_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 1)
+        )
 
     def forward(self, X_src, X_tgt, placed, coords):
-        """
-        X_src:   (B, N_blocks, src_dim)
-        X_tgt:   (B, N_actions, 1 + action_feats)
-        placed:  (B, min_actions) con índices de bloques colocados (-1 = padding)
-        coords:  (B, min_actions, 3) coordenadas relativas
-        """
         device = X_src.device
         B, N_blocks, _ = X_src.shape
 
@@ -112,9 +106,9 @@ class Transformer(EncoderDecoderPEModel):
         for b in range(B):
             valid_mask = (placed[b] != -1)
             if valid_mask.any():
-                ctx = E_src[b, placed[b, valid_mask].long()]  # (N_context, d_model)
+                ctx = E_src[b, placed[b, valid_mask].long()]
                 coord_vals = coords[b, valid_mask]
-                ctx = torch.cat([ctx, coord_vals], dim=1)  # concatenar coords
+                ctx = torch.cat([ctx, coord_vals], dim=1)
             else:
                 ctx = torch.zeros((1, self.d_model + 3), device=device)
             batch_contexts.append(ctx)
@@ -135,22 +129,25 @@ class Transformer(EncoderDecoderPEModel):
         block_indices = X_tgt[:, :, 0].long()
         X_action = X_tgt[:, :, 1:]
 
-        # obtener embeddings del bloque (índices por batch)
         B_idx = torch.arange(B, device=device).unsqueeze(-1)
-        E_block = E_src[B_idx, block_indices]  # (B, N_actions, d_model)
+        E_block = E_src[B_idx, block_indices]
         E_action = self.action_encoder(X_action.view(-1, X_action.shape[-1])).view(B, -1, self.d_model)
 
-        # fusión simple
-        E_global = self.global_agg(E_src)  # (B, d_model)
-        E_tgt = E_block + E_action + E_global.unsqueeze(1)
+        E_tgt = torch.cat([E_block, E_action], dim=2)
+        E_tgt = self.action_block_proj(E_tgt)
 
+        # sumar embedding global
+        E_global = self.global_agg(E_src)
+        E_tgt = E_tgt + E_global.unsqueeze(1)
 
         # --- Cross-attention ---
         decoder_out = self.decoder(
             E_tgt, E_context,
             memory_key_padding_mask=src_key_padding_mask
-        )  # (B, N_actions, d_model)
+        )
 
-        # --- Salida ---
-        logits = self.output_head(decoder_out).squeeze(-1)  # (B, N_actions)
-        return logits
+        # --- Salidas ---
+        logits = self.output_head(decoder_out).squeeze(-1)   # (B, N_actions)
+        value = self.value_head(E_global).squeeze(-1)        # (B,)
+
+        return logits, value

@@ -91,10 +91,11 @@ def reinforce(model, instance_file, instance_number, eps=10, lr=1e-4, gamma=0.99
         # Entrenar y actualizar parámetros por episodio
         probs, rewards, vol = generate_rl_data(model, instance_file, instance_number)
         discounted_r = compute_discounted_returns(rewards, gamma)
+        discounted_r = discounted_r - discounted_r.mean()
         loss = update_params(optimizer, probs, discounted_r)
 
         vol_arr.append(vol)
         loss_arr.append(float(loss))
-        print(f'Volume Ratio: {vol}\tLoss: {loss}')
+        print(f'Volume Ratio: {vol}\tLoss: {loss}') 
 
     return vol_arr, loss_arr

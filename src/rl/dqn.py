@@ -105,11 +105,11 @@ class DQNAgent:
     # -----------------------------------------------------------
     def train_step(self):
         if len(self.memory) < self.batch_size:
-            return
+            return None
 
         batch = self.sample_batch()
-
         losses = []
+
         for dqn_state, action_idx, reward, next_dqn_state, done in batch:
             # Q(s,a)
             q_values = get_predictions(
@@ -120,7 +120,6 @@ class DQNAgent:
                 dqn_state.coords,
                 apply_softmax=False
             ).squeeze(0)
-
             q_value = q_values[action_idx]
 
             # Q_target(s', a')
@@ -145,12 +144,15 @@ class DQNAgent:
         loss_batch.backward()
         self.optimizer.step()
 
+        return loss_batch.item()
+
     # -----------------------------------------------------------
     def learn(self, episodes=20):
         for ep in range(episodes):
             state = env.initial_state(self.instance_file, self.instance_number, w=8)
             done = False
             total_reward = 0.0
+            last_loss = None  # 👈 agregado
 
             while True:
                 valid_actions = env.get_valid_actions(
@@ -183,7 +185,9 @@ class DQNAgent:
                     self.remember(dqn_state.clone(), action_idx, reward, next_dqn_state.clone(), done)
 
                 # Entrenamiento online
-                self.train_step()
+                loss = self.train_step()
+                if loss is not None:
+                    last_loss = loss 
 
                 if done:
                     break
@@ -194,6 +198,6 @@ class DQNAgent:
                 self.epsilon = max(0.05, self.epsilon * self.epsilon_decay)
 
             vol_ratio = state.get_volume_ratio()
-            print(f"[Ep {ep+1}] Volume Ratio: {vol_ratio:.4f}\tTotal Reward: {total_reward:.4f}\tEpsilon: {self.epsilon:.3f}")
+            print(f"[Ep {ep+1}] Volume Ratio: {vol_ratio:.4f}\tEpsilon: {self.epsilon:.3f}\tLoss: {last_loss if last_loss is not None else 'N/A'}")
 
             state.close()

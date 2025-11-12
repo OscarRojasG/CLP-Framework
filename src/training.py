@@ -129,7 +129,7 @@ def save_model(model: nn.Module, filename):
     torch.save(model.state_dict(), model_folder_path + filename)
 
 def load_model(empty_model: nn.Module, filename):
-    empty_model.load_state_dict(torch.load(model_folder_path + filename, weights_only=True))
+    empty_model.load_state_dict(torch.load(model_folder_path + filename, weights_only=True), strict=False)
     empty_model.eval()
     return empty_model
 
@@ -142,7 +142,7 @@ def load_dataset(dataset_file):
     coords = torch.tensor(np.array(coords), dtype=torch.float32)
 
     # 🔧 Reemplazar todos los features (excepto el primero) por ceros
-    X_tgt[..., 1:3] = 0.0
+    #X_tgt[..., 1:3] = 0.0
 
     return NamedDataset(dataset_file, X_src, X_tgt, Y, placed, coords)
 
@@ -226,7 +226,7 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patie
             y_batch = y_batch.to(device)
 
             optimizer.zero_grad()
-            outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)
+            outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)[0]
             loss = loss_function(outputs, y_batch.argmax(dim=-1))
             loss.backward()
             optimizer.step()
@@ -246,7 +246,7 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, patie
                     coords_batch = coords_batch.to(device)
                     y_batch = y_batch.to(device)
 
-                    outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)
+                    outputs = get_predictions(model, X_src_batch, X_tgt_batch, placed_batch, coords_batch)[0]
                     loss = loss_function(outputs, y_batch.argmax(dim=-1))
                     metrics.update_batch(outputs, y_batch, loss.item(), X_tgt_batch.size(0))
                 metrics.end_epoch()

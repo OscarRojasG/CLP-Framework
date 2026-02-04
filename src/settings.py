@@ -1,6 +1,12 @@
-instance_folder_path = "instances/"
-output_folder_path = "outputs/"
-data_folder_path = "data/"
-models_folder_path = "models/"
-bsg_solver_path = "./BSG_CLP"
-env_path = "./BSG_ENV"
+from pathlib import Path
+
+PROJECT_ROOT = Path.cwd().parent
+INSTANCE_FOLDER = PROJECT_ROOT / "instances"
+OUTPUT_FOLDER = PROJECT_ROOT / "outputs"
+DATA_FOLDER = PROJECT_ROOT / "data"
+DATASETS_FOLDER = DATA_FOLDER / "datasets"
+MODELS_FOLDER = PROJECT_ROOT / "models"
+HYPERPARAMS_FOLDER = MODELS_FOLDER / "hyperparams"
+
+BSG_SOLVER_PATH = PROJECT_ROOT / "BSG_CLP"
+BSG_ENV_PATH = PROJECT_ROOT / "BSG_ENV"

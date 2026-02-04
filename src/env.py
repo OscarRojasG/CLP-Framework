@@ -1,10 +1,11 @@
 import subprocess
 import numpy as np
+from settings import BSG_ENV_PATH, INSTANCE_FOLDER
 
 class State():
     def __init__(self, process: subprocess.Popen):
         self.process = process  # Referencia al proceso persistente
-        self.blocks, self.block_index_dict = self.process_get_blocks()
+        self.blocks, self.id_to_index, self.index_to_id = self.process_get_blocks()
         self.process_update()
 
     def process_get_blocks(self):
@@ -13,7 +14,8 @@ class State():
         self.process.stdin.flush()
 
         # Diccionario de índices
-        block_index_dict = {}
+        id_to_index = {}
+        index_to_id = {}
 
         # Leer hasta que no haya más salida (bloquea si el proceso no termina)
         output = []
@@ -28,17 +30,18 @@ class State():
             if len(parts) > 1:
                 # Ignora el primer elemento (block_id)
                 metrics = [float(x) for x in parts[1:]]
-                block_index_dict[int(parts[0])] = len(output)
+                id_to_index[int(parts[0])] = len(output)
+                index_to_id[len(output)] = int(parts[0])
                 output.append(metrics)
-        return np.array(output), block_index_dict
+        return np.array(output), id_to_index, index_to_id
 
-    def process_get_placed_blocks(self, block_index_dict, padding=64):
+    def process_get_placed_blocks(self, padding=64):
         cmd = "-P\n"
         self.process.stdin.write(cmd)
         self.process.stdin.flush()
 
-        placed = []
-        placed_coords = []
+        placed_blocks = []
+        placed_features = []
 
         # Leer todas las líneas hasta que no haya más salida
         while True:
@@ -52,25 +55,30 @@ class State():
             parts = line.split()
 
             block_id = int(parts[0])
-            coords = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+            features = list(map(float, parts[1:]))
 
-            placed.append(block_index_dict[block_id])
-            placed_coords.append(coords)
+            placed_blocks.append(self.id_to_index[block_id])
+            placed_features.append(features)
 
-        # Aplicar padding si hay menos de `padding` bloques
-        if len(placed) < padding:
-            placed.extend([-1] * (padding - len(placed)))
-            placed_coords.extend([[0.0, 0.0, 0.0]] * (padding - len(placed_coords)))
+        placed_features = np.array(placed_features, dtype=float).reshape(-1, 3)
+        placed_blocks = np.array(placed_blocks, dtype=int)
 
-        return np.array(placed), np.array(placed_coords)
+        n = placed_features.shape[0]
+        pad_len = max(0, padding - n)
+
+        if pad_len > 0:
+            placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
+            placed_blocks = np.pad(placed_blocks, pad_width=(0, pad_len), mode='constant', constant_values=-1)
+
+        return placed_blocks, placed_features
     
     def process_get_actions(self):
         cmd = "-A\n"
         self.process.stdin.write(cmd)
         self.process.stdin.flush()
 
-        block_ids = []
-        metrics = []
+        action_blocks = []
+        action_features = []
 
         # Leer la salida línea por línea
         while True:
@@ -87,13 +95,13 @@ class State():
             # [2:] Ignoramos block_id + eval (VCS)
             values = [float(x) for x in parts[2:]]
 
-            block_ids.append(block_id)
-            metrics.append(values)
+            action_blocks.append(self.id_to_index[block_id])
+            action_features.append(values)
 
-        # Convertir la lista de métricas a un array de NumPy
-        metrics_array = np.array(metrics, dtype=float)
+        action_blocks = np.array(action_blocks, dtype=int)
+        action_features = np.array(action_features, dtype=float)
 
-        return metrics_array, block_ids
+        return action_blocks, action_features
     
     def process_get_volume_ratio(self):
         cmd = "-V\n"
@@ -108,29 +116,25 @@ class State():
     
     def process_update(self):
         self.volume_ratio = self.process_get_volume_ratio()
-        self.actions, self.action_blocks_id = self.process_get_actions()
-        if len(self.actions) == 0: return
+        self.action_blocks, self.action_features = self.process_get_actions()
+        if len(self.action_blocks) == 0: return
 
-        self.placed, self.coords_placed = self.process_get_placed_blocks(self.block_index_dict)
+        self.placed_blocks, self.placed_features = self.process_get_placed_blocks()
     
-    def get_blocks(self):
+    def get_block_features(self):
         return self.blocks
     
-    def get_placed(self):
-        return self.placed
+    def get_action_blocks(self):
+        return self.action_blocks
     
-    def get_coords(self):
-        return self.coords_placed
+    def get_action_features(self):
+        return self.action_features
     
-    def get_actions(self, add_block_index=False):
-        actions = []
-        for i in range(len(self.actions)):
-            block_id = self.action_blocks_id[i]
-            action = self.actions[i]
-            if add_block_index:
-                action = np.insert(action, 0, self.block_index_dict[block_id], axis=0)
-            actions.append(Action(block_id, action))
-        return actions
+    def get_placed_blocks(self):
+        return self.placed_blocks
+    
+    def get_placed_features(self):
+        return self.placed_features
     
     def get_volume_ratio(self):
         return self.volume_ratio
@@ -153,8 +157,8 @@ class Environment:
         # Crear proceso persistente
         process = subprocess.Popen(
             [
-                "./BSG_ENV",
-                f"instances/{instance_file}",
+                BSG_ENV_PATH,
+                INSTANCE_FOLDER / instance_file,
                 "-i", str(instance_number),
                 "-w", str(w)
             ],
@@ -169,17 +173,15 @@ class Environment:
         return State(process)
 
     @staticmethod
-    def get_valid_actions(state: State, add_block_index: bool) -> list[Action]:
-        return state.get_actions(add_block_index)
-
-    @staticmethod
-    def state_transition(state: State, action: Action):
+    def state_transition(state: State, action_block: int):
         """
         Envía una acción al proceso para realizar la transición de estado
         y devuelve el valor flotante 'reward' resultante.
         """
         process = state.process
-        cmd = f"-T {action.block_id}\n"
+        block_id = state.index_to_id[action_block]
+
+        cmd = f"-T {block_id}\n"
         process.stdin.write(cmd)
         process.stdin.flush()
 

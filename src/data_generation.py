@@ -1,11 +1,10 @@
 import subprocess
 import os
 from concurrent.futures import ThreadPoolExecutor
-import re
 import pickle
 import numpy as np
-from typing import Dict, List, Tuple
-from . import settings
+from typing import Dict, List
+from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
 
 
 
@@ -28,9 +27,9 @@ class ActionData:
         return f"Action(block={self.block.block_id}, metrics={self.metrics})"
     
 class PlacedBlock:
-    def __init__(self, block: BlockData, coords: Tuple[int, int, int]):
+    def __init__(self, block: BlockData, features: List[float]):
         self.block = block
-        self.coords = coords
+        self.features = features
 
 class StateData:
     """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
@@ -45,27 +44,27 @@ class StateData:
 
 
 
-def run_instance(file_path, i, w, base_folder=None):
+def run_instance(instance_filename, i, w, base_folder=None):
     """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Asegurarse de que la carpeta de salida exista
     # Determinar carpeta destino: si se pasa base_folder, guardamos dentro de output_folder/base_folder
     if base_folder:
-        dest_dir = os.path.join(settings.output_folder_path, base_folder)
+        dest_dir = os.path.join(OUTPUT_FOLDER, base_folder)
     else:
-        dest_dir = settings.output_folder_path
+        dest_dir = OUTPUT_FOLDER
 
     os.makedirs(dest_dir, exist_ok=True)
 
     # Obtener el nombre base de file_path sin la extensión
-    base_filename = os.path.splitext(os.path.basename(file_path))[0]
+    base_filename = os.path.splitext(os.path.basename(instance_filename))[0]
 
     # Generar el nombre del archivo de salida con 'i' y extensión .out dentro de dest_dir
     output_file_path = os.path.join(dest_dir, f"{base_filename}-{i}.out")
 
     # Ejecutar el proceso y capturar la salida
     proc = subprocess.run(
-        [settings.bsg_solver_path, settings.instance_folder_path+file_path, "-i", str(i), "-w", str(w), f"--verbose2={str(w*w)}"],
+        [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--verbose2={str(w*w)}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=True,
@@ -77,20 +76,23 @@ def run_instance(file_path, i, w, base_folder=None):
         f.write(proc.stdout)
 
 
-def run_file_instances_parallel(file_path, w=8, max_workers=None):
+def run_instances_parallel(instance_filename, w=8, max_workers=None):
     # Leer número de instancias
-    with open(settings.instance_folder_path+file_path, "r") as f:
+    with open(INSTANCE_FOLDER / instance_filename, "r") as f:
         num_instances = int(f.readline().strip())
 
     # Preparar el nombre de la carpeta base para pasar a run_instance (si se desea agrupar salidas)
-    base_folder = os.path.splitext(os.path.basename(file_path))[0] + ".out"
+    base_folder = os.path.splitext(os.path.basename(instance_filename))[0]
     # Nos aseguramos de que la carpeta output principal exista (las subcarpetas se crearán en run_instance)
-    os.makedirs(settings.output_folder_path, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for i in range(num_instances):
-            executor.submit(run_instance, file_path, i, w, base_folder)
+            executor.submit(run_instance, instance_filename, i, w, base_folder)
+
+    print(f"Salida guardada en: {OUTPUT_FOLDER / base_folder}")
+
 
 def parse_blocks(filepath: str) -> dict[int, BlockData]:
     """Lee un archivo con formato de bloques y devuelve {block_id: BlockData}."""
@@ -117,6 +119,7 @@ def parse_blocks(filepath: str) -> dict[int, BlockData]:
             blocks_info[block_id] = BlockData(block_id, metrics)
 
     return blocks_info
+
 
 def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[StateData]:
     results = []
@@ -146,8 +149,8 @@ def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State
                 while i < n and lines[i] != "Selected Block":
                     parts = lines[i].split()
                     block_id = int(parts[0])
-                    coords = tuple(map(float, parts[1:4]))
-                    placed_blocks.append(PlacedBlock(blocks_info[block_id], coords))
+                    features = list(map(float, parts[1:]))
+                    placed_blocks.append(PlacedBlock(blocks_info[block_id], features))
                     i += 1
 
             # --- Selected Block ---
@@ -171,6 +174,7 @@ def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State
 
     return results
 
+
 def get_w(filename: str) -> int:
     with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
@@ -185,18 +189,10 @@ def get_w(filename: str) -> int:
 
 
 def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
-    """
-    Genera:
-        X_src_all     : (repetido) métricas de todos los bloques
-        X_tgt_all     : métricas de las acciones factibles por estado
-        Y_all         : vector one-hot del bloque elegido
-        placed_all    : vector (min_actions) con índices+1 de bloques colocados (0 = padding)
-        coords_masked : matriz (min_actions, 3) con coordenadas de los bloques colocados
-    """
     # --- Cargar datos ---
     blocks_info = parse_blocks(filename)
     if len(blocks_info) < min_blocks:
-        return [], [], [], [], []
+        return [], [], [], [], [], []
 
     states = parse_states(filename, blocks_info)
 
@@ -204,138 +200,115 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
     block_ids = list(blocks_info.keys())
     global_index_map = {block_id: idx for idx, block_id in enumerate(block_ids)}
 
-    # --- X_src fijo ---
-    X_src = np.array(
+    # --- bloques fijos ---
+    block_features = np.array(
         [blocks_info[b_id].metrics for b_id in block_ids],
         dtype=float
     )
 
-    # --- Inicialización ---
-    X_src_all, X_tgt_all, Y_all, placed_all, coords_masked = [], [], [], [], []
+    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, Y_all = [], [], [], [], [], []
 
     # --- Recorremos los estados ---
-    for h, state in enumerate(states):
+    for state in states:
         # --- Acciones disponibles ---
         # [1:] Ignoramos eval (VCS)
-        X_tgt = np.array([[global_index_map[action.block.block_id]] + action.metrics[1:] for action in state.actions], dtype=float)
+        action_features = np.array([action.metrics[1:] for action in state.actions], dtype=float)
+        action_blocks = np.array([global_index_map[action.block.block_id] for action in state.actions], dtype=int)
 
         # --- Validaciones ---
-        if len(X_tgt) < min_actions:
+        if len(action_features) < min_actions:
             continue
-        if not np.isfinite(X_tgt).all():
+        if not np.isfinite(action_features).all():
             continue
 
         # --- Etiqueta one-hot ---
         num_actions = len(state.actions)
-        Y = np.zeros(num_actions, dtype=float)
+        Y = np.zeros(num_actions, dtype=int)
         for i, action in enumerate(state.actions):
             if action.block.block_id == state.chosen_action.block.block_id:
-                Y[i] = 1.0
+                Y[i] = 1
                 break
 
+        # --- Bloques colocados ---
+        placed_features = np.array([placed.features for placed in state.placed], dtype=float).reshape(-1, 3)
+        placed_blocks = np.array([global_index_map[placed.block.block_id] for placed in state.placed], dtype=int)
+
+        n = placed_features.shape[0]
+        pad_len = max(0, min_actions - n)
+
+        if pad_len > 0:
+            placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
+            placed_blocks = np.pad(placed_blocks, pad_width=(0, pad_len), mode='constant', constant_values=-1)
+
         # --- Agregar estado ---
-        X_src_all.append(X_src)
-        X_tgt_all.append(X_tgt)
+        block_features_all.append(block_features)
+        action_features_all.append(action_features)
+        action_blocks_all.append(action_blocks)
+        placed_features_all.append(placed_features)
+        placed_blocks_all.append(placed_blocks)
         Y_all.append(Y)
 
-        # --- Vector placed (bloques ya colocados) ---
-        placed = np.full(min_actions, -1, dtype=int)
-        for idx, placed_block in enumerate(state.placed):
-            placed[idx] = global_index_map[placed_block.block.block_id]  # índice directo en X_src
-        placed_all.append(placed)
-
-        # --- coords_masked: coordenadas relativas alineadas con placed ---
-        coords_mat = np.zeros((min_actions, 3), dtype=float)
-        for idx, placed_block in enumerate(state.placed):
-            coords_mat[idx] = placed_block.coords
-
-        coords_masked.append(coords_mat)
-
     return (
-        np.array(X_src_all, dtype=np.float32),
-        np.array(X_tgt_all, dtype=np.float32),
-        np.array(Y_all, dtype=np.float32),
-        np.array(placed_all, dtype=np.int32),
-        np.array(coords_masked, dtype=np.float32)
+        np.array(block_features_all, dtype=np.float32),
+        np.array(action_blocks_all, dtype=np.int32),
+        np.array(action_features_all, dtype=np.float32),
+        np.array(placed_blocks_all, dtype=np.int32),
+        np.array(placed_features_all, dtype=np.float32),
+        np.array(Y_all, dtype=np.float32)
     )
 
+
 def generate_data_from_folder(folder_path):
-    all_X_src = []      # Entradas del encoder (bloques estáticos)
-    all_X_tgt = []      # Entradas del decoder (acciones por estado)
-    all_Y = []          # Etiquetas one-hot
-    all_placed = []     # Índices de bloques colocados
-    all_coords = []     # Coordenadas de bloques colocados
+    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, Y_all = [], [], [], [], [], []
 
     # Iterar sobre todos los archivos en la carpeta
-    for filename in os.listdir(settings.output_folder_path + folder_path):
-        file_path = os.path.join(settings.output_folder_path + folder_path, filename)
+    for filename in os.listdir(OUTPUT_FOLDER / folder_path):
+        file_path = os.path.join(OUTPUT_FOLDER / folder_path, filename)
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
-            X_src, X_tgt, Y, placed, coords = generate_train_data(file_path)
+            block_features, action_blocks, action_features, placed_blocks, placed_features, Y = generate_train_data(file_path)
 
             # Agregar los datos del archivo actual a las listas generales
-            all_X_src.extend(X_src)
-            all_X_tgt.extend(X_tgt)
-            all_Y.extend(Y)
-            all_placed.extend(placed)
-            all_coords.extend(coords)
+            block_features_all.extend(block_features)
+            action_features_all.extend(action_features)
+            placed_features_all.extend(placed_features)
+            action_blocks_all.extend(action_blocks)
+            placed_blocks_all.extend(placed_blocks)
+            Y_all.extend(Y)
 
     # Definir el nombre del archivo de salida basado en el nombre de la carpeta
     folder_name = os.path.basename(folder_path)
     output_filename = folder_name.split('.')[0] + ".data"
-    output_path = settings.data_folder_path + output_filename
+    output_path = DATA_FOLDER / output_filename
 
-    # Guardar los datos (ahora con placed y coords)
+    # Guardar los datos
     with open(output_path, "wb") as f:
         pickle.dump({
-            "X_src": all_X_src,
-            "X_tgt": all_X_tgt,
-            "Y": all_Y,
-            "placed": all_placed,
-            "coords": all_coords
+            "block_features": np.array(block_features_all, dtype=np.float32),
+            "action_blocks": np.array(action_blocks_all, dtype=np.int32),
+            "action_features": np.array(action_features_all, dtype=np.float32),
+            "placed_blocks": np.array(placed_blocks_all, dtype=np.int32),
+            "placed_features": np.array(placed_features_all, dtype=np.float32),
+            "Y": np.array(Y_all, dtype=np.int32)
         }, f)
 
     print(f"Datos guardados en: {output_path}")
 
-def load_data_from_file(filename):
-    file_path = settings.data_folder_path + filename
+
+def load_data(filename):
+    file_path = DATA_FOLDER / filename
     
     # Abrir el archivo .data y cargar los datos
     with open(file_path, "rb") as f:
         data = pickle.load(f)
 
-    # Extraer X, Y y block_ids
-    X_src = data["X_src"]
-    X_tgt = data["X_tgt"]
+    # Extraer datos
+    block_features = data["block_features"]
+    action_blocks = data["action_blocks"]
+    action_features = data["action_features"]
+    placed_blocks = data["placed_blocks"]
+    placed_features = data["placed_features"]
     Y = data["Y"]
-    placed = data["placed"]
-    coords = data["coords"]
 
-    return X_src, X_tgt, Y, placed, coords
-
-def join_data_files(filenames, output_filename):
-    merged_data = {}  # Diccionario donde se unirán todos los datos
-
-    for filename in filenames:
-        file_path = settings.data_folder_path + filename
-
-        # Abrir el archivo .data y cargar los datos
-        with open(file_path, "rb") as f:
-            data = pickle.load(f)
-
-            # Unir listas de cada clave
-            for key, value in data.items():
-                if key in merged_data:
-                    merged_data[key].extend(value)  # concatenar listas
-                else:
-                    merged_data[key] = value.copy()  # crear nueva entrada
-                    
-    # Crear el nombre del archivo de salida
-    output_path = settings.data_folder_path + output_filename
-
-    # Guardar el diccionario combinado
-    with open(output_path, "wb") as f:
-        pickle.dump(merged_data, f)
-
-    print(f"Datos combinados guardados en: {output_path}")
+    return block_features, action_blocks, action_features, placed_blocks, placed_features, Y

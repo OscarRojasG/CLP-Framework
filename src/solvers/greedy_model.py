@@ -1,10 +1,9 @@
-from solvers.base.solver import Solver
-from env import Environment
+from envs.env import Environment
 from models.base.transformer import Transformer
 import torch
 import numpy as np
 
-class GreedyModelSolver(Solver):
+class GreedyModelSolver():
     def __init__(self, model: Transformer):
         self.model = model
 

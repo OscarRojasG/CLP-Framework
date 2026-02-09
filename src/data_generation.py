@@ -230,7 +230,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
                 break
 
         # --- Bloques colocados ---
-        placed_features = np.array([placed.features for placed in state.placed], dtype=float).reshape(-1, 3)
+        placed_features = np.array([placed.features for placed in state.placed], dtype=float).reshape(-1, 4)
         placed_blocks = np.array([global_index_map[placed.block.block_id] for placed in state.placed], dtype=int)
 
         n = placed_features.shape[0]

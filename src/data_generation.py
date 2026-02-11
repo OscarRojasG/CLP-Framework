@@ -2,6 +2,7 @@ import subprocess
 import os
 from concurrent.futures import ThreadPoolExecutor
 import pickle
+import h5py
 import numpy as np
 from typing import Dict, List
 from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
@@ -283,32 +284,12 @@ def generate_data_from_folder(folder_path):
     output_path = DATA_FOLDER / output_filename
 
     # Guardar los datos
-    with open(output_path, "wb") as f:
-        pickle.dump({
-            "block_features": np.array(block_features_all, dtype=np.float32),
-            "action_blocks": np.array(action_blocks_all, dtype=np.int32),
-            "action_features": np.array(action_features_all, dtype=np.float32),
-            "placed_blocks": np.array(placed_blocks_all, dtype=np.int32),
-            "placed_features": np.array(placed_features_all, dtype=np.float32),
-            "Y": np.array(Y_all, dtype=np.int32)
-        }, f)
+    with h5py.File(output_path, "w") as f:
+        f.create_dataset("block_features", data=np.array(block_features_all, dtype=np.float32))
+        f.create_dataset("action_blocks", data=np.array(action_blocks_all, dtype=np.int32))
+        f.create_dataset("action_features", data=np.array(action_features_all, dtype=np.float32))
+        f.create_dataset("placed_blocks", data=np.array(placed_blocks_all, dtype=np.int32))
+        f.create_dataset("placed_features", data=np.array(placed_features_all, dtype=np.float32))
+        f.create_dataset("Y", data=np.array(Y_all, dtype=np.int32))
 
     print(f"Datos guardados en: {output_path}")
-
-
-def load_data(filename):
-    file_path = DATA_FOLDER / filename
-    
-    # Abrir el archivo .data y cargar los datos
-    with open(file_path, "rb") as f:
-        data = pickle.load(f)
-
-    # Extraer datos
-    block_features = data["block_features"]
-    action_blocks = data["action_blocks"]
-    action_features = data["action_features"]
-    placed_blocks = data["placed_blocks"]
-    placed_features = data["placed_features"]
-    Y = data["Y"]
-
-    return block_features, action_blocks, action_features, placed_blocks, placed_features, Y

@@ -1,18 +1,39 @@
 import os
-import pickle
 import numpy as np
 import torch
 import gc
-from torch.utils.data import TensorDataset
-from data_generation import load_data
-from settings import DATASETS_FOLDER
+import h5py
+from torch.utils.data import Dataset
+from settings import DATASETS_FOLDER, DATA_FOLDER
 
 
-class Dataset(TensorDataset):
-    def __init__(self, filepath, *tensors):
-        super().__init__(*tensors)
-        self.filepath = filepath
-        self.name = os.path.basename(filepath)
+class H5Dataset(Dataset):
+    def __init__(self, file_path):
+        self.file_path = file_path
+        self._open_file()
+        self.name = os.path.basename(file_path)
+
+    def _open_file(self):
+        self.file = h5py.File(self.file_path, "r")
+        self.block_features = self.file["block_features"]
+        self.action_blocks = self.file["action_blocks"]
+        self.action_features = self.file["action_features"]
+        self.placed_blocks = self.file["placed_blocks"]
+        self.placed_features = self.file["placed_features"]
+        self.Y = self.file["Y"]
+
+    def __len__(self):
+        return len(self.Y)
+
+    def __getitem__(self, idx):
+        return (
+            torch.from_numpy(self.block_features[idx]),
+            torch.from_numpy(self.action_blocks[idx]),
+            torch.from_numpy(self.action_features[idx]),
+            torch.from_numpy(self.placed_blocks[idx]),
+            torch.from_numpy(self.placed_features[idx]),
+            torch.tensor(self.Y[idx])
+        )
 
 
 def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
@@ -22,10 +43,8 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
     """
     np.random.seed(seed)
 
-    # Asegurarse de que la carpeta de salida exista
     os.makedirs(DATASETS_FOLDER, exist_ok=True)
 
-    # --- Crear diccionario de datasets ---
     datasets = {
         i: {
             "block_features": [],
@@ -41,64 +60,67 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
     # --- Procesar cada archivo ---
     for filename in filenames:
         print(f"Procesando archivo: {filename}")
-        block_features, action_blocks, action_features, placed_blocks, placed_features, Y = load_data(filename)
+        dataset_obj = load_data(filename)
 
-        # --- Separar los datos según los cortes ---
-        for i, y_vector in enumerate(Y):
+        for i in range(len(dataset_obj)):
+            y_vector = dataset_obj.Y[i]
             pos = int(np.argmax(y_vector))
 
             for j in range(len(cuts) - 1):
                 if pos < cuts[j + 1]:
-                    datasets[j + 1]["block_features"].append(block_features[i])
-                    datasets[j + 1]["action_blocks"].append(action_blocks[i])
-                    datasets[j + 1]["action_features"].append(action_features[i])
-                    datasets[j + 1]["placed_blocks"].append(placed_blocks[i])
-                    datasets[j + 1]["placed_features"].append(placed_features[i])
-                    datasets[j + 1]["Y"].append(Y[i])
+                    datasets[j + 1]["block_features"].append(dataset_obj.block_features[i])
+                    datasets[j + 1]["action_blocks"].append(dataset_obj.action_blocks[i])
+                    datasets[j + 1]["action_features"].append(dataset_obj.action_features[i])
+                    datasets[j + 1]["placed_blocks"].append(dataset_obj.placed_blocks[i])
+                    datasets[j + 1]["placed_features"].append(dataset_obj.placed_features[i])
+                    datasets[j + 1]["Y"].append(dataset_obj.Y[i])
                     break
-        
-        del block_features
-        del action_blocks
-        del action_features
-        del placed_blocks
-        del placed_features
-        del Y
+
+        # cerrar archivo HDF5 explícitamente
+        dataset_obj.file.close()
         gc.collect()
 
-    # --- Guardar cada dataset ---
+    # --- Guardar cada dataset en HDF5 ---
     for i, dataset in datasets.items():
         start_cut = cuts[i - 1] + 1 if i > 1 else cuts[i - 1]
         end_cut = cuts[i]
 
-        # Truncar si se excede el tamaño máximo
         if max_size is not None and len(dataset["block_features"]) > max_size:
             n = len(dataset["block_features"])
             indices = np.random.choice(n, size=max_size, replace=False)
-
             for key in dataset:
                 dataset[key] = [dataset[key][idx] for idx in indices]
 
         output_filename = f"{basename}_{start_cut}-{end_cut}.data"
         output_file_path = DATASETS_FOLDER / output_filename
 
-        with open(output_file_path, "wb") as f:
-            pickle.dump(dataset, f)
+        # Convertir listas a arrays antes de guardar
+        block_features_np = np.array(dataset["block_features"], dtype=np.float32)
+        action_blocks_np = np.array(dataset["action_blocks"], dtype=np.int32)
+        action_features_np = np.array(dataset["action_features"], dtype=np.float32)
+        placed_blocks_np = np.array(dataset["placed_blocks"], dtype=np.int32)
+        placed_features_np = np.array(dataset["placed_features"], dtype=np.float32)
+        Y_np = np.array(dataset["Y"], dtype=np.int32)
+
+        # Guardar en HDF5
+        with h5py.File(output_file_path, "w") as f:
+            f.create_dataset("block_features", data=block_features_np)
+            f.create_dataset("action_blocks", data=action_blocks_np)
+            f.create_dataset("action_features", data=action_features_np)
+            f.create_dataset("placed_blocks", data=placed_blocks_np)
+            f.create_dataset("placed_features", data=placed_features_np)
+            f.create_dataset("Y", data=Y_np)
 
         print(
             f"Dataset guardado en: {output_file_path} "
-            f"(Tamaño {len(dataset['block_features'])})"
+            f"(Tamaño {len(block_features_np)})"
         )
 
 
 def load_dataset(filepath):
-    block_features, action_blocks, action_features, placed_blocks, placed_features, Y = load_data(filepath)
-    block_features = torch.tensor(np.array(block_features), dtype=torch.float32)
-    action_blocks = torch.tensor(np.array(action_blocks), dtype=torch.int32)
-    action_features = torch.tensor(np.array(action_features), dtype=torch.float32)
-    placed_blocks = torch.tensor(np.array(placed_blocks), dtype=torch.int32)
-    placed_features = torch.tensor(np.array(placed_features), dtype=torch.float32)
-    Y = torch.tensor(np.array(Y), dtype=torch.int32)
-
-    dataset = Dataset(filepath, block_features, action_blocks, action_features, placed_blocks, placed_features, Y)
+    dataset = H5Dataset(DATASETS_FOLDER / filepath)
     print(f"Dataset {dataset.name} cargado con {len(dataset)} muestras.")
     return dataset
+
+def load_data(filepath):
+    return H5Dataset(DATA_FOLDER / filepath)

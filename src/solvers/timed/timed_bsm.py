@@ -10,7 +10,7 @@ class TimedBSMSolver():
     def __init__(self, model: Transformer):
         self.model = model
         
-    def solve(self, instance_file, instance_number, time):
+    def solve(self, instance_file, instance_number, time, verbose=False):
         signal.signal(signal.SIGALRM, self.timeout_handler)
         signal.alarm(time)
 
@@ -21,9 +21,18 @@ class TimedBSMSolver():
 
         try:
             while True:
+                if verbose:
+                    print("Ejecutando BSM con w =", w)
+
                 bsm = bsm_solver.env.init(instance_file, instance_number, w)
                 bsm_solver._solve(w, bsm)
-                best_eval = max(best_eval, bsm.get_volume_ratio() * 100)
+                eval = bsm.get_volume_ratio() * 100
+
+                if eval > best_eval:
+                    best_eval = eval
+                    if verbose:
+                        print("Actualizando mejor volumen:", best_eval)
+
                 w = math.ceil(w * math.sqrt(2))
         except TimeoutException:
             pass

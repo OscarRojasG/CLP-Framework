@@ -275,15 +275,9 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     test_sets = data_manager.get_val_subsets()
     stats = TrainingStats()
     phases = len(datasets)
-
-    def score_function(val_metrics_list):
-        return sum([val_metrics.acc_history[-1] * test_weights[i] / sum(test_weights) for i, val_metrics in enumerate(val_metrics_list)])
     
     def print_best_score(best_score):
         print(f"✅ Mejor accuracy obtenido: {best_score:.2f}%\n")
-
-    model_scorer = ModelScorer(model, score_function, print_best_score)
-
 
     ### CONFIG
     device = torch.device("cuda" if torch.cuda.is_available() 
@@ -299,10 +293,15 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     for phase in range(1, phases+1):
         train_set = data_manager.get_train_subset(phase)
 
-        def print_epoch_results(epoch, train_metrics, val_metrics_list):
-            samples_per_set = [len(test_set) if test_set.name in train_set.dataset_names else 0 for test_set in test_sets]
-            epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
+        samples_per_set = [len(test_set) if test_set.name in train_set.dataset_names else 0 for test_set in test_sets]
+        epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
 
+        def score_function(val_metrics_list):
+            return sum([val_metrics.acc_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
+        
+        model_scorer = ModelScorer(model, score_function, print_best_score)
+
+        def print_epoch_results(epoch, train_metrics, val_metrics_list):
             val_epoch_loss = sum([val_metrics.loss_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
             val_epoch_acc = sum([val_metrics.acc_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
 

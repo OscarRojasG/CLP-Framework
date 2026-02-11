@@ -10,7 +10,7 @@ class BSMSolver():
 
     def solve(self, instance_file, instance_number, w: int) -> int:
         bsm = self.env.init(instance_file, instance_number, w)
-        volume = self._solve(instance_file, instance_number, w, bsm)
+        volume = self._solve(w, bsm)
         bsm.close()
         return volume
 

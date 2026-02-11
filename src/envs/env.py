@@ -6,15 +6,21 @@ from settings import BSG_ENV_PATH, INSTANCE_FOLDER
 class State(Process):
     def __init__(self, process: subprocess.Popen):
         super().__init__(process)
-        self.blocks, self.id_to_index, self.index_to_id = self.process_get_blocks()
+
+        self.print_blocks()
+        self.blocks, self.id_to_index, self.index_to_id = self.read_blocks()
         self.update()
     
     def update(self):
-        self.volume_ratio = self.process_get_volume_ratio()
-        self.action_blocks, self.action_features = self.process_get_actions()
+        self.print_volume_ratio()
+        self.volume_ratio = self.read_volume_ratio()
+
+        self.print_actions()
+        self.action_blocks, self.action_features = self.read_actions()
         if len(self.action_blocks) == 0: return
 
-        self.placed_blocks, self.placed_features = self.process_get_placed_blocks()
+        self.print_placed_blocks()
+        self.placed_blocks, self.placed_features = self.read_placed_blocks(padding=64)
 
     def get_block_features(self):
         return self.blocks

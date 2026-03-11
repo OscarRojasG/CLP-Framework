@@ -1,5 +1,5 @@
 from torch import nn
-from torch.utils.data import random_split, DataLoader, Subset, ConcatDataset
+from torch.utils.data import Dataset, random_split, DataLoader, Subset, ConcatDataset
 import torch
 import os
 import numpy as np
@@ -98,10 +98,22 @@ class ValSubset(Subset):
         self.name = name
 
 
-class TrainSubset(ConcatDataset):
-    def __init__(self, subsets, dataset_names):
-        super().__init__(subsets)
-        self.dataset_names = dataset_names
+class TrainSubset(Dataset):
+    def __init__(self, subsets, names, weights):
+        self.dataset = torch.utils.data.ConcatDataset(subsets)
+        self.names = names
+        # Creamos un vector de pesos del mismo tamaño que el dataset total
+        sample_weights = []
+        for i, subset in enumerate(subsets):
+            # Asignamos el peso definido para esta dificultad a cada muestra
+            sample_weights.extend([weights[i]] * len(subset))
+        self.sample_weights = torch.DoubleTensor(sample_weights)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        return self.dataset[idx]
 
 
 class DataManager:
@@ -138,15 +150,20 @@ class DataManager:
         torch.manual_seed(self.seed + phase)
         train_subsets = []
         dataset_names = []
+        # Solo tomamos los pesos de los datasets activos en esta fase
+        active_weights = self.train_weights[:phase]
 
-        for i, train_dataset in enumerate(self.train_datasets[:phase]):
-            subset_size = int(self.train_size * self.train_weights[i] / sum(self.train_weights[:phase]))
+        for i in range(phase):
+            train_dataset = self.train_datasets[i]
+            # Calculamos tamaño proporcional (esto mantiene el tamaño del dataset total)
+            subset_size = int(self.train_size * self.train_weights[i] / sum(active_weights))
             if subset_size == 0: continue
+            
             train_subset, _ = random_split(train_dataset, [subset_size, len(train_dataset) - subset_size])
             train_subsets.append(train_subset)
             dataset_names.append(train_dataset.name)
 
-        return TrainSubset(train_subsets, dataset_names)
+        return TrainSubset(train_subsets, dataset_names, active_weights)
     
 
 class ModelScorer:
@@ -242,7 +259,20 @@ def val_epoch(model: nn.Module, val_loader: DataLoader, loss_function, device):
     return loss, accuracy
 
 def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print_epoch_results, model_scorer, device):
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=8)
+    sampler = torch.utils.data.WeightedRandomSampler(
+        weights=train_set.sample_weights, 
+        num_samples=len(train_set), 
+        replacement=True
+    )
+
+    # 2. El DataLoader usa el sampler (shuffle debe ser False al usar sampler)
+    train_loader = DataLoader(
+        train_set, 
+        batch_size=batch_size, 
+        sampler=sampler, 
+        num_workers=8,
+        pin_memory=True
+    )
 
     test_loaders = []
     val_metrics_list = []
@@ -279,7 +309,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     phases = len(datasets)
     
     def print_best_score(best_score):
-        print(f"✅ Mejor accuracy obtenido: {best_score:.2f}%\n")
+        print(f"✅ Mejor loss obtenido: {-best_score:.4f}\n")
 
     ### CONFIG
     device = torch.device("cuda" if torch.cuda.is_available() 
@@ -295,11 +325,11 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     for phase in range(1, phases+1):
         train_set = data_manager.get_train_subset(phase)
 
-        samples_per_set = [len(test_set) if test_set.name in train_set.dataset_names else 0 for test_set in test_sets]
+        samples_per_set = [len(test_set) if test_set.name in train_set.names else 0 for test_set in test_sets]
         epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
 
         def score_function(val_metrics_list):
-            return sum([val_metrics.acc_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
+            return -sum([val_metrics.loss_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
         
         model_scorer = ModelScorer(model, score_function, print_best_score)
 

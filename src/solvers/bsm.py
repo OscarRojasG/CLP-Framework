@@ -1,7 +1,6 @@
 from envs.bsm_env import BSMEnvironment, BSM
 from models.base.transformer import Transformer
 import torch
-import numpy as np
 
 class BSMSolver():
     def __init__(self, model: Transformer):
@@ -15,43 +14,65 @@ class BSMSolver():
         return volume
 
     def _solve(self, w: int, bsm: BSM) -> int:
-        block_features = torch.tensor(np.array([bsm.get_block_features()]), dtype=torch.float32)
-        memory = self.model.encode(block_features)
+        block_features = torch.as_tensor(bsm.block_features.copy(), dtype=torch.float32).unsqueeze(0)
+        
+        with torch.no_grad():
+            memory = self.model.encode(block_features)
 
-        while True:
-            try:
-                action_blocks_batch = bsm.get_action_blocks_batch()
-                action_features_batch = bsm.get_action_features_batch()
-                placed_blocks_batch = bsm.get_placed_blocks_batch()
-                placed_features_batch = bsm.get_placed_features_batch()
-                space_features_batch = bsm.get_space_features_batch()
-            except Exception as e:
-                print("Error obteniendo datos:", e)
-                bsm.close()
-                raise
+            while True:
+                B = bsm.action_blocks_batch.shape[0]
 
-            action_indexes_batch = []
-            for i in range(len(action_blocks_batch)):
-                action_blocks = torch.tensor(np.array([action_blocks_batch[i]]), dtype=torch.int32)
-                action_features = torch.tensor(np.array([action_features_batch[i]]), dtype=torch.float32)
-                placed_blocks = torch.tensor(np.array([placed_blocks_batch[i]]), dtype=torch.int32)
-                placed_features = torch.tensor(np.array([placed_features_batch[i]]), dtype=torch.float32)
-                space_features = torch.tensor(np.array([space_features_batch[i]]), dtype=torch.float32)
+                # Expandimos la memoria si es necesario
+                curr_memory = memory.expand(B, -1, -1)
+                    
+                # Predecir las mejores acciones
+                output = self.model.decode(
+                    curr_memory,
+                    bsm.action_blocks_batch,
+                    bsm.action_features_batch,
+                    bsm.placed_blocks_batch,
+                    bsm.placed_features_batch,
+                    bsm.space_features_batch
+                )
+                    
+                topk_values, topk_indices = output.topk(min(w, output.size(1)), dim=1)
+                selected_action_blocks_batch = [
+                    row_idx[row_val > -1e9].tolist() 
+                    for row_idx, row_val in zip(bsm.action_blocks_batch.gather(1, topk_indices), topk_values)
+                ]
 
-                # Predecir la mejor acción
-                output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
-                _, action_indexes = output.topk(min(w, len(output[0])), dim=1)
-                action_indexes_batch.append(action_indexes[0])
-
-            selected_action_blocks_batch = []
-            for i in range(len(action_indexes_batch)):
-                selected_action_blocks = []
-                for j in range(len(action_indexes_batch[i])):
-                    selected_action_blocks.append(action_blocks_batch[i][action_indexes_batch[i][j]].item())
-                selected_action_blocks_batch.append(selected_action_blocks)
-
-            # Aplicar la acción
-            num_states = self.env.next(bsm, selected_action_blocks_batch)
-            if num_states == 0: break
+                # Generar sucesores (w2)
+                greedy_process = self.env.next(bsm, selected_action_blocks_batch)
+                
+                # Aplicar greedy a cada sucesor
+                while greedy_process.finished == False:
+                    B = greedy_process.bsm.num_states
+                    
+                    # Expandimos la memoria si es necesario
+                    curr_memory = memory.expand(B, -1, -1)
+                        
+                    # Predecir las mejores acciones
+                    output = self.model.decode(
+                        curr_memory,
+                        greedy_process.action_blocks_batch,
+                        greedy_process.action_features_batch,
+                        greedy_process.placed_blocks_batch,
+                        greedy_process.placed_features_batch,
+                        greedy_process.space_features_batch
+                    )
+                    
+                    # Seleccionamos la mejor acción por cada estado en el batch
+                    best_action_indices = output.argmax(dim=1)
+                    
+                    rows = torch.arange(B)
+                    selected_blocks = greedy_process.action_blocks_batch[rows, best_action_indices].tolist()
+                    
+                    greedy_process.transition(selected_blocks)
+                    
+                if bsm.num_states == 0:
+                    break
+                
+                # Actualizar generación actual (w)
+                bsm.update()
             
-        return bsm.get_volume_ratio() * 100
+        return bsm.volume_ratio * 100

@@ -36,6 +36,16 @@ class BSM(Process):
 
         return action_blocks_batch, action_features_batch
     
+    def read_spaces(self):
+        spaces_batch = []
+        super().print_space()
+
+        for _ in range(self.num_states):
+            space_features = super().read_space()
+            spaces_batch.append(space_features)
+
+        return spaces_batch
+    
     def update(self):
         if self.num_states == 0: return
 
@@ -43,6 +53,7 @@ class BSM(Process):
         self.volume_ratio = super().read_volume_ratio()
         self.action_blocks_batch, self.action_features_batch = self.read_actions()
         self.placed_blocks_batch, self.placed_features_batch = self.read_placed_blocks()
+        self.space_features_batch = self.read_spaces()
     
     def get_block_features(self):
         return self.blocks
@@ -58,6 +69,9 @@ class BSM(Process):
     
     def get_placed_features_batch(self):
         return self.placed_features_batch
+    
+    def get_space_features_batch(self):
+        return self.space_features_batch
     
     def get_volume_ratio(self):
         return self.volume_ratio

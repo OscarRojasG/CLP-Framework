@@ -11,9 +11,9 @@ class Transformer(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def decode(self, memory, action_blocks, action_features, placed_blocks, placed_features):
+    def decode(self, memory, action_blocks, action_features, placed_blocks, placed_features, space_features):
         pass
 
-    def forward(self, block_features, action_blocks, action_features, placed_blocks, placed_features):
+    def forward(self, block_features, action_blocks, action_features, placed_blocks, placed_features, space_features):
         memory = self.encode(block_features)
-        return self.decode(memory, action_blocks, action_features, placed_blocks, placed_features)
+        return self.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)

@@ -32,12 +32,17 @@ class PlacedBlock:
         self.block = block
         self.features = features
 
+class SpaceData:
+    def __init__(self, features):
+        self.features = features
+
 class StateData:
     """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
-    def __init__(self, actions: List[ActionData], chosen_action: ActionData, placed: List[PlacedBlock]):            
+    def __init__(self, actions: List[ActionData], chosen_action: ActionData, placed: List[PlacedBlock], space: SpaceData):            
         self.actions = actions              
         self.chosen_action = chosen_action
-        self.placed = placed   
+        self.placed = placed
+        self.space = space   
 
     def __repr__(self):
         chosen = self.chosen_action.block.block_id if self.chosen_action else None
@@ -147,12 +152,17 @@ def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State
             placed_blocks = []
             if i < n and lines[i] == "Placed":
                 i += 1
-                while i < n and lines[i] != "Selected Block":
+                while i < n and lines[i] != "Space":
                     parts = lines[i].split()
                     block_id = int(parts[0])
                     features = list(map(float, parts[1:]))
                     placed_blocks.append(PlacedBlock(blocks_info[block_id], features))
                     i += 1
+                    
+            # --- Espacio ---
+            i += 1  # saltar "Space"
+            space = SpaceData(list(map(float, lines[i].split())))
+            i += 1
 
             # --- Selected Block ---
             i += 1  # saltar "Selected Block"
@@ -168,7 +178,7 @@ def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[State
                 a for a in actions if a.block.block_id == chosen_block_id
             )
 
-            results.append(StateData(actions, chosen_action, placed_blocks))
+            results.append(StateData(actions, chosen_action, placed_blocks, space))
 
         else:
             i += 1
@@ -193,7 +203,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
     # --- Cargar datos ---
     blocks_info = parse_blocks(filename)
     if len(blocks_info) < min_blocks:
-        return [], [], [], [], [], []
+        return [], [], [], [], [], [], []
 
     states = parse_states(filename, blocks_info)
 
@@ -207,7 +217,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         dtype=float
     )
 
-    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, Y_all = [], [], [], [], [], []
+    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, spaces_all, Y_all = [], [], [], [], [], [], []
 
     # --- Recorremos los estados ---
     for state in states:
@@ -240,6 +250,9 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         if pad_len > 0:
             placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
             placed_blocks = np.pad(placed_blocks, pad_width=(0, pad_len), mode='constant', constant_values=-1)
+            
+        # --- Espacio ---
+        space_features = np.array(state.space.features, dtype=float)
 
         # --- Agregar estado ---
         block_features_all.append(block_features)
@@ -247,6 +260,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         action_blocks_all.append(action_blocks)
         placed_features_all.append(placed_features)
         placed_blocks_all.append(placed_blocks)
+        spaces_all.append(space_features)
         Y_all.append(Y)
 
     return (
@@ -255,12 +269,13 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         np.array(action_features_all, dtype=np.float32),
         np.array(placed_blocks_all, dtype=np.int32),
         np.array(placed_features_all, dtype=np.float32),
+        np.array(spaces_all, dtype=np.float32),
         np.array(Y_all, dtype=np.float32)
     )
 
 
 def generate_data_from_folder(folder_path):
-    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, Y_all = [], [], [], [], [], []
+    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, space_features_all, Y_all = [], [], [], [], [], [], []
 
     # Iterar sobre todos los archivos en la carpeta
     for filename in os.listdir(OUTPUT_FOLDER / folder_path):
@@ -268,7 +283,7 @@ def generate_data_from_folder(folder_path):
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
-            block_features, action_blocks, action_features, placed_blocks, placed_features, Y = generate_train_data(file_path)
+            block_features, action_blocks, action_features, placed_blocks, placed_features, space_features, Y = generate_train_data(file_path)
 
             # Agregar los datos del archivo actual a las listas generales
             block_features_all.extend(block_features)
@@ -276,6 +291,7 @@ def generate_data_from_folder(folder_path):
             placed_features_all.extend(placed_features)
             action_blocks_all.extend(action_blocks)
             placed_blocks_all.extend(placed_blocks)
+            space_features_all.extend(space_features)
             Y_all.extend(Y)
 
     # Definir el nombre del archivo de salida basado en el nombre de la carpeta
@@ -290,6 +306,7 @@ def generate_data_from_folder(folder_path):
         f.create_dataset("action_features", data=np.array(action_features_all, dtype=np.float32))
         f.create_dataset("placed_blocks", data=np.array(placed_blocks_all, dtype=np.int32))
         f.create_dataset("placed_features", data=np.array(placed_features_all, dtype=np.float32))
+        f.create_dataset("space_features", data=np.array(space_features_all, dtype=np.float32))
         f.create_dataset("Y", data=np.array(Y_all, dtype=np.int32))
 
     print(f"Datos guardados en: {output_path}")

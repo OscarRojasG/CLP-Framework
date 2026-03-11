@@ -71,6 +71,17 @@ class Process():
 
         return placed_blocks, placed_features
     
+    def print_space(self):
+        cmd = "-S\n"
+        self.process.stdin.write(cmd)
+        self.process.stdin.flush()
+        
+    def read_space(self):
+        line = self.process.stdout.readline().strip()
+        self.process.stdout.readline() # END
+        space_features = [float(x) for x in line.split()]
+        return np.array(space_features, dtype=float)
+    
     def print_actions(self):
         cmd = "-A\n"
         self.process.stdin.write(cmd)

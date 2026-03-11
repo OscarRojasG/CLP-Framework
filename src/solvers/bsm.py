@@ -24,6 +24,7 @@ class BSMSolver():
                 action_features_batch = bsm.get_action_features_batch()
                 placed_blocks_batch = bsm.get_placed_blocks_batch()
                 placed_features_batch = bsm.get_placed_features_batch()
+                space_features_batch = bsm.get_space_features_batch()
             except Exception as e:
                 print("Error obteniendo datos:", e)
                 bsm.close()
@@ -35,9 +36,10 @@ class BSMSolver():
                 action_features = torch.tensor(np.array([action_features_batch[i]]), dtype=torch.float32)
                 placed_blocks = torch.tensor(np.array([placed_blocks_batch[i]]), dtype=torch.int32)
                 placed_features = torch.tensor(np.array([placed_features_batch[i]]), dtype=torch.float32)
+                space_features = torch.tensor(np.array([space_features_batch[i]]), dtype=torch.float32)
 
                 # Predecir la mejor acción
-                output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features)
+                output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
                 _, action_indexes = output.topk(min(w, len(output[0])), dim=1)
                 action_indexes_batch.append(action_indexes[0])
 

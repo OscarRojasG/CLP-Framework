@@ -21,6 +21,9 @@ class State(Process):
 
         self.print_placed_blocks()
         self.placed_blocks, self.placed_features = self.read_placed_blocks(padding=64)
+        
+        self.print_space()
+        self.space_features = self.read_space()
 
     def get_block_features(self):
         return self.blocks
@@ -36,6 +39,9 @@ class State(Process):
     
     def get_placed_features(self):
         return self.placed_features
+    
+    def get_space_features(self):
+        return self.space_features
     
     def get_volume_ratio(self):
         return self.volume_ratio

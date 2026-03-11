@@ -178,17 +178,18 @@ def train_epoch(model: nn.Module, train_loader: DataLoader, loss_function, optim
     total_correct = 0
     total_samples = 0
 
-    for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, y_batch in train_loader:
+    for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch, y_batch in train_loader:
         # Mover los datos al dispositivo
         block_features_batch = block_features_batch.to(device)
         action_blocks_batch = action_blocks_batch.to(device)
         action_features_batch = action_features_batch.to(device)
         placed_blocks_batch = placed_blocks_batch.to(device)
         placed_features_batch = placed_features_batch.to(device)
+        space_features_batch = space_features_batch.to(device)
         y_batch = y_batch.to(device)
 
         optimizer.zero_grad()
-        outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch)
+        outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch)
 
         labels = y_batch.argmax(dim=-1)
         loss = loss_function(outputs, labels)
@@ -214,16 +215,17 @@ def val_epoch(model: nn.Module, val_loader: DataLoader, loss_function, device):
     total_samples = 0
 
     with torch.no_grad():
-        for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, y_batch in val_loader:
+        for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch, y_batch in val_loader:
             # Mover los datos al dispositivo
             block_features_batch = block_features_batch.to(device)
             action_blocks_batch = action_blocks_batch.to(device)
             action_features_batch = action_features_batch.to(device)
             placed_blocks_batch = placed_blocks_batch.to(device)
             placed_features_batch = placed_features_batch.to(device)
+            space_features_batch = space_features_batch.to(device)
             y_batch = y_batch.to(device)
 
-            outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch)
+            outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch)
 
             labels = y_batch.argmax(dim=-1)
             loss = loss_function(outputs, labels)
@@ -344,6 +346,6 @@ def load_model(model_class: object, model_name):
         hyperparams = json.load(f)
 
     model = model_class(**hyperparams)
-    model.load_state_dict(torch.load(str(MODELS_FOLDER / model_name) + ".pth", weights_only=True), strict=True)
+    model.load_state_dict(torch.load(str(MODELS_FOLDER / model_name) + ".pth", weights_only=True, map_location=torch.device('cpu')), strict=True)
     model.eval()
     return model

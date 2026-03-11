@@ -1,210 +1,185 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from .base.transformer import Transformer
+from models.base.transformer import Transformer
+
+class MLPEncoder(nn.Module):
+    def __init__(self, dim, d_model):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+
+    def forward(self, X_src):
+        return self.encoder(X_src)
 
 class CLPTransformer(Transformer):
-    def __init__(self, blocks_input_dim, space_input_dim, placed_input_dim, embed_dim=128, num_heads=8, num_encoder_layers=2, num_glimpses=2, dropout_rate=0.1):
+    def __init__(self, block_dim, action_dim, placed_dim, space_dim, d_model=256, nhead=8, num_layers=3, dropout=0.1):
         super().__init__(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            num_encoder_layers=num_encoder_layers,
-            num_glimpses=num_glimpses,
-            dropout_rate=dropout_rate,
+            block_dim=block_dim,
+            action_dim=action_dim,
+            placed_dim=placed_dim,
+            space_dim=space_dim,
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dropout=dropout
         )
-        self.embed_dim = embed_dim
+        self.d_model = d_model
+
+        # Componentes principales
+        self.block_encoder = MLPEncoder(block_dim, d_model)
+        self.action_encoder = MLPEncoder(action_dim, d_model)
+        self.placed_encoder = MLPEncoder(placed_dim, d_model)
         
-        # --- ENCODER ---
-        # Proyección inicial
-        self.encoder_input_layer = nn.Linear(blocks_input_dim, embed_dim)
+        self.space_proj = nn.Linear(space_dim, d_model)
+        self.final_placed_proj = nn.Linear(2*d_model, d_model)
+        self.final_action_proj = nn.Linear(2*d_model, d_model)
         
-        mlp_layers = []
-        mlp_layers.append(nn.Linear(embed_dim, embed_dim))
-
-        for _ in range(num_encoder_layers - 1):
-            mlp_layers.append(nn.ReLU())
-            mlp_layers.append(nn.Linear(embed_dim, embed_dim))
-
-        self.encoder = nn.Sequential(*mlp_layers)
-  
-        # --- DECODER ---
-        # Proyección placed_data y space
-        self.placed_data_proj = nn.Linear(placed_input_dim, embed_dim)
-        self.space_proj = nn.Linear(space_input_dim, embed_dim)
-
-        # Fusión de contexto (bloque colocado + data)
-        self.ctx_fusion = nn.Linear(2 * embed_dim, embed_dim)
-
-        # Fusión de estado (contexto + espacio + global)
-        self.state_fusion = nn.Linear(3 * embed_dim, embed_dim)
-
-        # Cross Attention
-        self.num_glimpses = num_glimpses
-        self.glimpse_proj = nn.Linear(embed_dim, embed_dim) # Proyección antes de glimpse
-
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            dropout=dropout_rate,
+        self.ctx_cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            dropout=dropout,
             batch_first=True
         )
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.ff = nn.Sequential(
-            nn.Linear(embed_dim, 4 * embed_dim),
-            nn.ReLU(),
-            nn.Linear(4 * embed_dim, embed_dim)
-        )
-        self.norm2 = nn.LayerNorm(embed_dim)
-
-        # Pointer Scorer
-        self.pointer_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-
-    # =====================================================
-    # 1. --- ENCODER ---
-    # Se llama una sola vez por instancia
-    # =====================================================
-    def encode(self, x_src):
-        """
-        x_src: (batch, num_blocks, input_dim) -> Bloques
-        """
-        # Proyectamos los bloques y los pasamos por el encoder
-        enc_input = self.encoder_input_layer(x_src)
-        memory = self.encoder(enc_input)  # (batch, num_blocks, embed_dim)
-
-        return memory
-    
-    # =====================================================
-    # 2. --- DECODER ---
-    # Se llama en cada paso del rollout
-    # =====================================================
-    def decode(self, memory, best_blocks, space, placed, placed_data):
-        """
-        memory: (batch, num_blocks, embed_dim)      -> Salida del encoder
-        best_blocks (batch, W)                      -> Índice mejores bloques (-1 para padding)
-        space:  (batch, space_input_dim)            -> Data del espacio actual
-        placed: (batch, T)                          -> Índice bloques colocados (-1 para padding)
-        placed_data: (batch, T, placed_input_dim)   -> Data de los bloques colocados
-        """
-        B, num_blocks, _ = memory.shape
-        _, num_actions = best_blocks.shape
-        device = memory.device
-
-        # 2. --- MÁSCARA BLOQUES COLOCADOS ---
-        placed_blocks_mask = torch.zeros(
-            B, num_blocks, dtype=torch.bool, device=device
-        )
-
-        valid = placed != -1
-        batch_ids, pos_ids = valid.nonzero(as_tuple=True)
-
-        placed_blocks_mask[batch_ids, placed[batch_ids, pos_ids]] = True
-
-        # 3. --- PROYECTAR COORDENADAS Y ESPACIO ---
-        placed_data_emb = self.placed_data_proj(placed_data)   # (B, T, D)
-        space_emb = self.space_proj(space)      # (B, D)
-
-        # 4. --- FUSIONAR BLOQUES COLOCADOS + COORDENADAS ---
-        # Inicializamos con ceros (para padding)
-        placed_blocks_emb = torch.zeros(
-            B, placed.size(1), memory.size(-1),
-            device=device
-        )
-
-        # Tomamos los embeddings correctos desde memory
-        placed_blocks_emb[batch_ids, pos_ids] = memory[
-            batch_ids, placed[batch_ids, pos_ids]
-        ]
-
-        # Concatenar por la dimensión de features
-        ctx_emb = torch.cat(
-            [placed_blocks_emb, placed_data_emb],
-            dim=-1
-        )   # (B, T, 2D)
-
-        # Proyectar de vuelta a D
-        ctx_emb = self.ctx_fusion(ctx_emb)  # (B, T, D)
-
-        # 5. --- MEDIA DEL CONTEXTO ---
-        # Máscara de pasos válidos
-        valid_mask = (placed != -1)            # (B, T)
-        valid_mask = valid_mask.unsqueeze(-1)  # (B, T, 1)
-
-        # Suma solo de pasos válidos
-        ctx_sum = (ctx_emb * valid_mask).sum(dim=1)  # (B, D)
-
-        # Número de pasos válidos por batch
-        counts = valid_mask.sum(dim=1).clamp(min=1)  # (B, 1)
-
-        # Media temporal
-        ctx_mean = ctx_sum / counts                  # (B, D)
-
-        # 6. --- CONCATENAR Y FUSIONAR CON ESPACIO Y CONTEXTO GLOBAL ---
-        global_ctx = memory.mean(dim=1)
-
-        state_emb = torch.cat(
-            [ctx_mean, space_emb, global_ctx],
-            dim=-1
-        )   # (B, 3D)
-
-        # Proyectar de vuelta a D
-        state_emb = self.state_fusion(state_emb)  # (B, D)
         
-        # 7. --- MÁSCARA W MEJORES BLOQUES ---
-        best_blocks_mask = torch.zeros(
-            B, num_blocks, dtype=torch.bool, device=device
+        self.action_cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
+            nn.ReLU(),
+            nn.Linear(4 * d_model, d_model)
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+        # Proyección final
+        self.output = nn.Linear(d_model, 1)
+
+
+    def encode(self, block_features):
+        B, N_blocks, _ = block_features.shape
+
+        E_src = self.block_encoder(
+            block_features.view(-1, block_features.shape[-1])
+        ).view(B, N_blocks, self.d_model)
+
+        return E_src
+    
+
+    def decode(self, memory, action_blocks, action_features, placed_blocks, placed_features, space_features):
+        """
+        print("Action blocks shape", action_blocks.shape)
+        print("Action features shape", action_features.shape)
+        print("Placed blocks shape", placed_blocks.shape)
+        print("Placed features shape", placed_features.shape)
+        print("Space features shape", space_features.shape)
+        """
+        
+        # ---------------------------------------------------
+        # 1. EMBEDDINGS BLOQUES COLOCADOS
+        # ---------------------------------------------------
+
+        placed_mask = placed_blocks != -1  # [B, Np]
+
+        placed_idx = placed_blocks.clamp(min=0)
+
+        block_emb = torch.gather(
+            memory,
+            1,
+            placed_idx.unsqueeze(-1).expand(-1, -1, self.d_model)
         )
 
-        valid = best_blocks != -1
-        batch_ids, pos_ids = valid.nonzero(as_tuple=True)
+        placed_extra = self.placed_encoder(placed_features)
 
-        best_blocks_mask[batch_ids, best_blocks[batch_ids, pos_ids]] = True
+        placed_cat = torch.cat([block_emb, placed_extra], dim=-1)
 
-        # 8. --- DECODER: Cross-Attention (Glimpse) ---
-        query = self.glimpse_proj(state_emb).unsqueeze(1)
+        placed_emb = self.final_placed_proj(placed_cat)  # [B, Np, d]
 
-        for _ in range(self.num_glimpses):
-            attn_out, _ = self.cross_attn(
-                query=query,            # (B, 1, D)
-                key=memory,             # (B, N, D)
-                value=memory,           # (B, N, D)
-                key_padding_mask=~best_blocks_mask  # (B, N)
-            )
+        # ---------------------------------------------------
+        # 2. EMBEDDINGS ACCIONES
+        # ---------------------------------------------------
 
-            query = self.norm1(attn_out + query)   # Residual + Norm
-            ff_out = self.ff(query)                # Feed-Forward
-            query = self.norm2(ff_out + query)  # Residual + Norm
+        action_idx = action_blocks
 
-        attn_out = query.squeeze(1)         # (B, D)
-
-        # 9. --- DECODER: Pointer scoring ---
-        # Máscara de acciones válidas
-        valid_actions_mask = (best_blocks != -1)        # (B, K)
-
-        # Inicializar embeddings
-        best_blocks_emb = torch.zeros(
-            B, num_actions, self.embed_dim,
-            device=device
+        block_emb = torch.gather(
+            memory,
+            1,
+            action_idx.unsqueeze(-1).expand(-1, -1, self.d_model)
         )
 
-        # Índices válidos
-        batch_ids, action_ids = valid_actions_mask.nonzero(as_tuple=True)
+        action_extra = self.action_encoder(action_features)
 
-        best_blocks_emb[batch_ids, action_ids] = memory[
-            batch_ids, best_blocks[batch_ids, action_ids]
-        ]  # (B, K, D)
+        action_cat = torch.cat([block_emb, action_extra], dim=-1)
 
-        ptr_query = self.pointer_proj(attn_out)          # (B, D)
+        action_emb = self.final_action_proj(action_cat)  # [B, Na, d]
 
-        scores = torch.matmul(
-            best_blocks_emb,                             # (B, K, D)
-            ptr_query.unsqueeze(-1)                      # (B, D, 1)
-        ).squeeze(-1)                                    # (B, K)
+        # ---------------------------------------------------
+        # 3. EMBEDDING ESPACIO
+        # ---------------------------------------------------
 
-        scores = scores / math.sqrt(self.embed_dim)
+        space_emb = self.space_proj(space_features).unsqueeze(1)  # [B,1,d]
 
-        # 10. --- DECODER: Masking y Softmax ---
-        scores = scores.masked_fill(~valid_actions_mask, float("-inf"))
-        probs = F.softmax(scores, dim=-1)                # (B, K)
+        # ---------------------------------------------------
+        # 4. ATENCIÓN ESPACIO → BLOQUES COLOCADOS
+        # ---------------------------------------------------
+
+        # 1. Identificar si hay bloques colocados
+        has_placed = placed_mask.any(dim=-1, keepdim=True) # [B, 1]
+
+        # 2. CREAR UNA MÁSCARA SEGURA: 
+        # Si una fila es toda False (sin bloques), forzamos el primer elemento a ser True 
+        # SOLO para que la capa de atención no explote.
+        safe_placed_mask = placed_mask.clone()
+        safe_placed_mask[~has_placed.squeeze(-1), 0] = True
+
+        # 3. Ejecutar la atención con la máscara segura
+        ctx_attn_out, _ = self.ctx_cross_attn(
+            query=space_emb,
+            key=placed_emb,
+            value=placed_emb,
+            key_padding_mask=~safe_placed_mask  # Usamos la versión segura
+        )
+
+        # 4. LIMPIEZA: 
+        # Para los batches que no tenían bloques, el resultado de ctx_attn_out 
+        # es basura (atención al elemento 0 forzado). Lo ponemos a cero.
+        ctx_attn_out = torch.where(has_placed.unsqueeze(-1), ctx_attn_out, torch.zeros_like(ctx_attn_out))
+
+        # 5. El resto sigue igual
+        ctx = self.norm1(space_emb + ctx_attn_out)
+        ff_out = self.ff(ctx)
+        ctx = self.norm2(ctx + ff_out)
+
+        # ---------------------------------------------------
+        # 5. ATENCIÓN ACCIONES → CONTEXTO
+        # ---------------------------------------------------
+
+        action_attn_out, _ = self.action_cross_attn(
+            query=action_emb,
+            key=ctx,
+            value=ctx
+        )
+
+        attn_out = self.norm1(action_emb + action_attn_out)
+
+        ff_out = self.ff(attn_out)
+
+        attn_out = self.norm2(attn_out + ff_out)  # [B,Na,d]
+
+        # ---------------------------------------------------
+        # 6. PROYECCIÓN FINAL
+        # ---------------------------------------------------
+
+        logits = self.output(attn_out).squeeze(-1)  # [B,Na]
+
+        probs = F.softmax(logits, dim=-1)
 
         return probs

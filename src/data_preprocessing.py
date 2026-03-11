@@ -20,6 +20,7 @@ class H5Dataset(Dataset):
         self.action_features = self.file["action_features"]
         self.placed_blocks = self.file["placed_blocks"]
         self.placed_features = self.file["placed_features"]
+        self.space_features = self.file["space_features"]
         self.Y = self.file["Y"]
 
     def __len__(self):
@@ -32,6 +33,7 @@ class H5Dataset(Dataset):
             torch.from_numpy(self.action_features[idx]),
             torch.from_numpy(self.placed_blocks[idx]),
             torch.from_numpy(self.placed_features[idx]),
+            torch.from_numpy(self.space_features[idx]),
             torch.tensor(self.Y[idx])
         )
 
@@ -52,6 +54,7 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
             "action_features": [],
             "placed_blocks": [],
             "placed_features": [],
+            "space_features": [],
             "Y": [],
         }
         for i in range(1, len(cuts))
@@ -73,6 +76,7 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
                     datasets[j + 1]["action_features"].append(dataset_obj.action_features[i])
                     datasets[j + 1]["placed_blocks"].append(dataset_obj.placed_blocks[i])
                     datasets[j + 1]["placed_features"].append(dataset_obj.placed_features[i])
+                    datasets[j + 1]["space_features"].append(dataset_obj.space_features[i])
                     datasets[j + 1]["Y"].append(dataset_obj.Y[i])
                     break
 
@@ -100,6 +104,7 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
         action_features_np = np.array(dataset["action_features"], dtype=np.float32)
         placed_blocks_np = np.array(dataset["placed_blocks"], dtype=np.int32)
         placed_features_np = np.array(dataset["placed_features"], dtype=np.float32)
+        space_features_np = np.array(dataset["space_features"], dtype=np.float32)
         Y_np = np.array(dataset["Y"], dtype=np.int32)
 
         # Guardar en HDF5
@@ -109,6 +114,7 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
             f.create_dataset("action_features", data=action_features_np)
             f.create_dataset("placed_blocks", data=placed_blocks_np)
             f.create_dataset("placed_features", data=placed_features_np)
+            f.create_dataset("space_features", data=space_features_np)
             f.create_dataset("Y", data=Y_np)
 
         print(

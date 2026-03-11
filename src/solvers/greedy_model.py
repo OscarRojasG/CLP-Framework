@@ -19,6 +19,7 @@ class GreedyModelSolver():
                 action_features = torch.tensor(np.array([state.get_action_features()]), dtype=torch.float32)
                 placed_blocks = torch.tensor(np.array([state.get_placed_blocks()]), dtype=torch.int32)
                 placed_features = torch.tensor(np.array([state.get_placed_features()]), dtype=torch.float32)
+                space_features = torch.tensor(np.array([state.get_space_features()]), dtype=torch.float32)
             except Exception as e:
                 print("Error obteniendo datos:", e)
                 state.close()
@@ -27,7 +28,7 @@ class GreedyModelSolver():
             if len(state.get_action_blocks()) == 0: break # Estado completado
 
             # Predecir la mejor acción
-            output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features)
+            output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
             action_block = int(action_blocks[0][output.argmax()])
 
             # Aplicar la acción

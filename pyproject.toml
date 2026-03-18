@@ -4,3 +4,7 @@ version = "0.1.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Esto le dice: "Busca en cualquier paquete dentro de src e incluye los .so"
+"*" = ["*.so", "*.pyd"]

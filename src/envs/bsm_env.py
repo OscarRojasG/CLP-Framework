@@ -2,7 +2,7 @@ import subprocess
 import numpy as np
 import torch
 from envs.process import Process
-from settings import BSG_ENV_PATH, INSTANCE_FOLDER
+from settings import BSM_ENV_PATH, INSTANCE_FOLDER
 
 class BSM(Process):
     def __init__(self, process: subprocess.Popen, w: int):
@@ -106,11 +106,10 @@ class BSMEnvironment:
         # Crear proceso persistente
         process = subprocess.Popen(
             [
-                BSG_ENV_PATH,
+                BSM_ENV_PATH,
                 INSTANCE_FOLDER / instance_file,
                 "-i", str(instance_number),
-                "-w", str(w),
-                "--bsm"
+                "-w", str(w)
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

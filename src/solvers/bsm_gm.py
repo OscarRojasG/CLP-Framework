@@ -1,6 +1,6 @@
 from models.base.transformer import Transformer
 from settings import INSTANCE_FOLDER
-from bsm_engine import BSM_ENV
+from bsm_gm_engine import BSM_GM
 import os
 import torch
 import time
@@ -20,7 +20,7 @@ class BSMSolver():
         total_cpp_to_py_time = 0.0
         total_py_to_torch_time = 0.0
         
-        bsm = BSM_ENV(instance_file, instance_number, w)
+        bsm = BSM_GM(instance_file, instance_number, w)
         
         raw_bl_feats = bsm.get_block_features()
         block_features = torch.from_numpy(raw_bl_feats).unsqueeze(0)
@@ -95,7 +95,7 @@ class BSMSolver():
         return bsm.best_volume * 100
 '''
 
-class BSMSolver():
+class BSM_GM_Solver():
     def __init__(self, model: Transformer):
         self.model = model
 
@@ -105,7 +105,7 @@ class BSMSolver():
         if os.path.exists(instance_file) == False:
             raise Exception(f'El archivo de instancia {instance_file} no existe.')
         
-        bsm = BSM_ENV(instance_file, instance_number, w)
+        bsm = BSM_GM(instance_file, instance_number, w)
         
         raw_bl_feats = bsm.get_block_features()
         block_features = torch.from_numpy(raw_bl_feats).unsqueeze(0)
@@ -114,7 +114,7 @@ class BSMSolver():
             memory = self.model.encode(block_features)
 
             while not bsm.is_bsm_finished():
-                batch_data_bsm = bsm.get_full_batch_bsm()
+                batch_data_bsm = bsm.get_batch_dict_bsm()
                 
                 action_blocks_batch = torch.from_numpy(batch_data_bsm["act_blocks"]).to(dtype=torch.int32)
                 action_features_batch = torch.from_numpy(batch_data_bsm["act_feats"]).to(dtype=torch.float32)
@@ -136,7 +136,7 @@ class BSMSolver():
                 bsm.transition_bsm(selected_action_blocks_batch)
                                
                 while not bsm.is_greedy_finished():
-                    batch_data_gr = bsm.get_full_batch_greedy()
+                    batch_data_gr = bsm.get_batch_dict_greedy()
                     
                     action_blocks_batch = torch.from_numpy(batch_data_gr["act_blocks"]).to(dtype=torch.int32)
                     action_features_batch = torch.from_numpy(batch_data_gr["act_feats"]).to(dtype=torch.float32)

@@ -199,12 +199,9 @@ def get_w(filename: str) -> int:
     raise ValueError(f"No se encontró 'Beam width:' en el archivo {filename}")
 
 
-def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
+def generate_train_data(filename: str, min_actions=64, padding_blocks = 10000, padding_placed = 64):
     # --- Cargar datos ---
     blocks_info = parse_blocks(filename)
-    if len(blocks_info) < min_blocks:
-        return [], [], [], [], [], [], []
-
     states = parse_states(filename, blocks_info)
 
     # --- Mapa global de índices (basado en X_src) ---
@@ -216,6 +213,12 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         [blocks_info[b_id].metrics for b_id in block_ids],
         dtype=float
     )
+    
+    n = block_features.shape[0]
+    pad_len = max(0, padding_blocks - n)
+    
+    if pad_len > 0:
+        block_features = np.pad(block_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
 
     block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, spaces_all, Y_all = [], [], [], [], [], [], []
 
@@ -226,10 +229,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         action_features = np.array([action.metrics[1:] for action in state.actions], dtype=float)
         action_blocks = np.array([global_index_map[action.block.block_id] for action in state.actions], dtype=int)
 
-        # --- Validaciones ---
         if len(action_features) < min_actions:
-            continue
-        if not np.isfinite(action_features).all():
             continue
 
         # --- Etiqueta one-hot ---
@@ -245,7 +245,7 @@ def generate_train_data(filename: str, min_blocks=10000, min_actions=64):
         placed_blocks = np.array([global_index_map[placed.block.block_id] for placed in state.placed], dtype=int)
 
         n = placed_features.shape[0]
-        pad_len = max(0, min_actions - n)
+        pad_len = max(0, padding_placed - n)
 
         if pad_len > 0:
             placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)

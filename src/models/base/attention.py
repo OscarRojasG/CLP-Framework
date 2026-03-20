@@ -15,7 +15,9 @@ class CrossAttentionBlock(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(d_model, 4*d_model),
             nn.ReLU(),
-            nn.Linear(4*d_model, d_model)
+            nn.Dropout(dropout),
+            nn.Linear(4*d_model, d_model),
+            nn.Dropout(dropout)
         )
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -48,7 +50,9 @@ class SelfAttentionBlock(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(d_model, 4*d_model),
             nn.ReLU(),
-            nn.Linear(4*d_model, d_model)
+            nn.Dropout(dropout),
+            nn.Linear(4*d_model, d_model),
+            nn.Dropout(dropout)
         )
         self.norm2 = nn.LayerNorm(d_model)
 

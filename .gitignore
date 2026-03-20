@@ -221,3 +221,4 @@ instances/**
 models/**
 outputs/**
 stats/**
+experiments/*.csv

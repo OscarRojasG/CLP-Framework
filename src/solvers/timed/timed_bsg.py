@@ -1,7 +1,11 @@
 import subprocess
 from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
+from solvers.timed.timed_solver import Timed_Solver
 
-class TimedBSGSolver():
+class Timed_BSG_Solver(Timed_Solver):
+    def __init__(self):
+        super().__init__("Timed BSG")
+        
     def solve(self, instance_file, instance_number, time):
         # Ejecutar el proceso y capturar la salida
         proc = subprocess.run(

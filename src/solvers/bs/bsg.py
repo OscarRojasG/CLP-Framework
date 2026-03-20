@@ -1,15 +1,15 @@
 import subprocess
 from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
-from solvers.bs_solver import BS_Solver
+from solvers.bs.bs_solver import BS_Solver
 
 class BSG_Solver(BS_Solver):
-    def __init__(self, w):
-        self.w = w
+    def __init__(self):
+        super().__init__("BSG")
         
-    def solve(self, instance_file, instance_number) -> int:
+    def solve(self, instance_file, instance_number, w) -> int:
         # Ejecutar el proceso y capturar la salida
         proc = subprocess.run(
-            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-w", str(self.w)],
+            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-w", str(w)],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,

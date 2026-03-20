@@ -6,7 +6,7 @@ class Timed_Solver(ABC):
         self.name = name
         
     @abstractmethod
-    def solve(self, instance_file, instance_number, time) -> int:
+    def solve(self, instance_file, instance_number, min_fr, time) -> int:
         pass
     
 class Timed_BSM_Solver(Timed_Solver):
@@ -17,9 +17,9 @@ class Timed_BSM_Solver(Timed_Solver):
         self.solver_class = solver_class
         self.verbose = False
         
-    def solve(self, instance_file, instance_number, time):
+    def solve(self, instance_file, instance_number, min_fr, time):
         instance_file = str(INSTANCE_FOLDER / instance_file)       
-        dse = self.dse_module(instance_file, instance_number, time)
+        dse = self.dse_module(instance_file, instance_number, min_fr, time)
         solver = self.solver_class(self.model)
         best_volume = 0
         

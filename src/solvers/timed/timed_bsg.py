@@ -6,10 +6,10 @@ class Timed_BSG_Solver(Timed_Solver):
     def __init__(self):
         super().__init__("Timed BSG")
         
-    def solve(self, instance_file, instance_number, time):
+    def solve(self, instance_file, instance_number, min_fr, time):
         # Ejecutar el proceso y capturar la salida
         proc = subprocess.run(
-            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-t", str(time)],
+            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-t", str(time), f"--min_fr={min_fr}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,

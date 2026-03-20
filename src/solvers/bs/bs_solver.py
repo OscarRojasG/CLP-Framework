@@ -7,7 +7,7 @@ class BS_Solver(ABC):
         self.name = name
         
     @abstractmethod
-    def solve(self, instance_file, instance_number, w) -> int:
+    def solve(self, instance_file, instance_number, w, min_fr) -> int:
         pass
     
 class BSM_Solver(BS_Solver):
@@ -16,16 +16,16 @@ class BSM_Solver(BS_Solver):
         self.model = model
         self.solver_module = solver_module
         
-    def load_env(self, instance_file, instance_number, w):
+    def load_env(self, instance_file, instance_number, w, min_fr):
         instance_file = str(INSTANCE_FOLDER / instance_file) 
         
         if os.path.exists(instance_file) == False:
             raise Exception(f'El archivo de instancia {instance_file} no existe.')
         
-        return self.solver_module(instance_file, instance_number, w)
+        return self.solver_module(instance_file, instance_number, w, min_fr)
     
-    def solve(self, instance_file, instance_number, w):
-        bsm = self.load_env(instance_file, instance_number, w)
+    def solve(self, instance_file, instance_number, w, min_fr):
+        bsm = self.load_env(instance_file, instance_number, w, min_fr)
         return self.solve_from_env(bsm)
     
     @abstractmethod

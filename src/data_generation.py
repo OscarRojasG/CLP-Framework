@@ -50,7 +50,7 @@ class StateData:
 
 
 
-def run_instance(instance_filename, i, w, base_folder=None):
+def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
     """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Asegurarse de que la carpeta de salida exista
@@ -70,7 +70,7 @@ def run_instance(instance_filename, i, w, base_folder=None):
 
     # Ejecutar el proceso y capturar la salida
     proc = subprocess.run(
-        [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--verbose2={str(w*w)}"],
+        [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--min_fr={min_fr}", f"--verbose2={str(w*w)}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=True,
@@ -82,7 +82,7 @@ def run_instance(instance_filename, i, w, base_folder=None):
         f.write(proc.stdout)
 
 
-def run_instances_parallel(instance_filename, w=8, max_workers=None):
+def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1):
     # Leer número de instancias
     with open(INSTANCE_FOLDER / instance_filename, "r") as f:
         num_instances = int(f.readline().strip())
@@ -95,7 +95,7 @@ def run_instances_parallel(instance_filename, w=8, max_workers=None):
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for i in range(num_instances):
-            executor.submit(run_instance, instance_filename, i, w, base_folder)
+            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr)
 
     print(f"Salida guardada en: {OUTPUT_FOLDER / base_folder}")
 

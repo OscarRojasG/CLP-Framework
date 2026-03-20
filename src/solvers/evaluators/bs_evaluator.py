@@ -2,7 +2,7 @@ from solvers.bs.bs_solver import BS_Solver
 import pandas as pd
 import time
 
-def bs_eval(solver_list: list[BS_Solver], instance_file: str, num_instances: int, w: int):
+def bs_eval(solver_list: list[BS_Solver], instance_file: str, num_instances: int, w: int, min_fr: float):
     eval_dict = {
         'instance': [i for i in range(num_instances)],
     }
@@ -13,7 +13,7 @@ def bs_eval(solver_list: list[BS_Solver], instance_file: str, num_instances: int
         
         for i in range(num_instances):
             t0 = time.perf_counter()
-            vol = solver.solve(instance_file, i, w)
+            vol = solver.solve(instance_file, i, w, min_fr)
             t1 = time.perf_counter()
             vols.append(vol)
             times.append(t1 - t0)

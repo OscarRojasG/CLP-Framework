@@ -1,0 +1,61 @@
+import torch.nn as nn
+
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, d_model, nhead, dropout):
+        super().__init__()
+        
+        self.attn = nn.MultiheadAttention(
+            d_model,
+            nhead,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4*d_model),
+            nn.ReLU(),
+            nn.Linear(4*d_model, d_model)
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, query, key, value, key_padding_mask=None):
+        attn_out, _ = self.attn(
+            query=query,
+            key=key,
+            value=value,
+            key_padding_mask=key_padding_mask
+        )
+        
+        x = self.norm1(query + attn_out)
+        ff_out = self.ff(x)
+        x = self.norm2(x + ff_out)
+        return x
+    
+
+class SelfAttentionBlock(nn.Module):
+    def __init__(self, d_model, nhead, dropout):
+        super().__init__()
+
+        self.attn = nn.MultiheadAttention(
+            d_model,
+            nhead,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4*d_model),
+            nn.ReLU(),
+            nn.Linear(4*d_model, d_model)
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x, mask=None):
+        attn_out, _ = self.attn(x, x, x, key_padding_mask=mask)
+        
+        x = self.norm1(x + attn_out)
+        ff_out = self.ff(x)
+        x = self.norm2(x + ff_out)
+        return x

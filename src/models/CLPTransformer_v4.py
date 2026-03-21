@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.base.attention import CrossAttentionBlock, SelfAttentionBlock
+from models.base.legacy import CrossAttentionBlock, SelfAttentionBlock
 from models.base.transformer import Transformer
 
 class MLPEncoder(nn.Module):

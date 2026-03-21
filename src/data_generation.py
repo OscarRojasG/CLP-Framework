@@ -199,7 +199,7 @@ def get_w(filename: str) -> int:
     raise ValueError(f"No se encontró 'Beam width:' en el archivo {filename}")
 
 
-def generate_train_data(filename: str, min_actions=64, padding_blocks = 10000, padding_placed = 64):
+def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, padding_placed=64):
     # --- Cargar datos ---
     blocks_info = parse_blocks(filename)
     states = parse_states(filename, blocks_info)

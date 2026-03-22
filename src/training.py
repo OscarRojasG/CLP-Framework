@@ -1,5 +1,5 @@
 from torch import nn
-from torch.utils.data import Dataset, random_split, DataLoader, Subset, ConcatDataset
+from torch.utils.data import Dataset, random_split, DataLoader, Subset
 import torch
 import os
 import numpy as np
@@ -7,6 +7,7 @@ import copy
 import json
 import matplotlib.pyplot as plt
 from settings import MODELS_FOLDER, HYPERPARAMS_FOLDER
+from torch.amp import GradScaler, autocast
 
 
 class Metrics:
@@ -99,30 +100,36 @@ class ValSubset(Subset):
 
 
 class TrainSubset(Dataset):
-    def __init__(self, subsets, names, weights):
+    def __init__(self, subsets, names, weights, loss_weights):
         self.dataset = torch.utils.data.ConcatDataset(subsets)
         self.names = names
-        # Creamos un vector de pesos del mismo tamaño que el dataset total
+        
         sample_weights = []
+        l_weights = []
         for i, subset in enumerate(subsets):
-            # Asignamos el peso definido para esta dificultad a cada muestra
             sample_weights.extend([weights[i]] * len(subset))
+            l_weights.extend([loss_weights[i]] * len(subset))
+            
         self.sample_weights = torch.DoubleTensor(sample_weights)
+        self.l_weights = torch.FloatTensor(l_weights)
+
+    def __getitem__(self, index):
+        data = self.dataset[index]
+        loss_w = self.l_weights[index]
+        return (*data, loss_w)
 
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx):
-        return self.dataset[idx]
-
 
 class DataManager:
-    def __init__(self, datasets, train_size, train_weights, test_size, test_weights, seed):
+    def __init__(self, datasets, train_size, train_weights, test_size, test_weights, loss_weights, seed):
         self.datasets = datasets
         self.train_size = train_size
         self.train_weights = train_weights
         self.test_size = test_size
         self.test_weights = test_weights
+        self.loss_weights = loss_weights
         self.seed = seed
 
         train_datasets, test_subsets = self.create_val_subsets()
@@ -150,20 +157,30 @@ class DataManager:
         torch.manual_seed(self.seed + phase)
         train_subsets = []
         dataset_names = []
-        # Solo tomamos los pesos de los datasets activos en esta fase
-        active_weights = self.train_weights[:phase]
+        
+        active_train_weights = self.train_weights[:phase]
+        active_loss_cfg = self.loss_weights[:phase]
+
+        # NORMALIZACIÓN: Suma = 1
+        total_loss_cfg = sum(active_loss_cfg)
+        norm_loss_weights = [lw / total_loss_cfg for lw in active_loss_cfg]
+        
+        # Cálculo de tamaños de subset
+        total_tw = sum(active_train_weights)
 
         for i in range(phase):
             train_dataset = self.train_datasets[i]
-            # Calculamos tamaño proporcional (esto mantiene el tamaño del dataset total)
-            subset_size = int(self.train_size * self.train_weights[i] / sum(active_weights))
+            subset_size = int(self.train_size * active_train_weights[i] / total_tw)
             if subset_size == 0: continue
             
-            train_subset, _ = random_split(train_dataset, [subset_size, len(train_dataset) - subset_size])
+            train_subset, _ = torch.utils.data.random_split(
+                train_dataset, [subset_size, len(train_dataset) - subset_size]
+            )
             train_subsets.append(train_subset)
             dataset_names.append(train_dataset.name)
 
-        return TrainSubset(train_subsets, dataset_names, active_weights)
+        # Pasamos los pesos normalizados que suman 1
+        return TrainSubset(train_subsets, dataset_names, active_train_weights, norm_loss_weights)
     
 
 class ModelScorer:
@@ -189,41 +206,40 @@ class ModelScorer:
         return self.model
     
     
-def train_epoch(model: nn.Module, train_loader: DataLoader, loss_function, optimizer, device):
+def train_epoch(model, train_loader, loss_function, optimizer, device, scaler):
     model.train()
-    total_loss = 0.0
+    total_raw_loss = 0.0
     total_correct = 0
     total_samples = 0
 
-    for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch, y_batch in train_loader:
-        # Mover los datos al dispositivo
-        block_features_batch = block_features_batch.to(device)
-        action_blocks_batch = action_blocks_batch.to(device)
-        action_features_batch = action_features_batch.to(device)
-        placed_blocks_batch = placed_blocks_batch.to(device)
-        placed_features_batch = placed_features_batch.to(device)
-        space_features_batch = space_features_batch.to(device)
-        y_batch = y_batch.to(device)
+    for *inputs, y_batch, loss_w_batch in train_loader:
+        # Transferencia asíncrona
+        inputs = [i.to(device, non_blocking=True) for i in inputs]
+        y_batch = y_batch.to(device, non_blocking=True)
+        loss_w_batch = loss_w_batch.to(device, non_blocking=True)
 
-        optimizer.zero_grad()
-        outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch)
+        optimizer.zero_grad(set_to_none=True) # Más eficiente que zero_grad()
 
-        labels = y_batch.argmax(dim=-1)
-        loss = loss_function(outputs, labels)
+        # Autocast para precisión mixta (FP16)
+        with autocast(device.type):
+            outputs = model(*inputs)
+            labels = y_batch.argmax(dim=-1)
+            raw_loss = loss_function(outputs, labels) 
+            weighted_loss = (raw_loss * loss_w_batch).mean()
 
-        loss.backward()
-        optimizer.step()
+        # Escalamiento de gradientes para evitar subdesbordamiento (underflow)
+        scaler.scale(weighted_loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
-        # Acumulación de métricas
-        batch_size = labels.size(0)
-        total_loss += loss.item() * batch_size
-        total_correct += (outputs.argmax(dim=1) == labels).sum().item()
-        total_samples += batch_size
+        # Métricas (Intentamos minimizar el paso de datos GPU -> CPU)
+        with torch.no_grad():
+            batch_size = labels.size(0)
+            total_raw_loss += raw_loss.mean().item() * batch_size
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            total_samples += batch_size
 
-    loss = total_loss / total_samples
-    accuracy = 100 * total_correct / total_samples
-
-    return loss, accuracy
+    return total_raw_loss / total_samples, 100 * total_correct / total_samples
 
 def val_epoch(model: nn.Module, val_loader: DataLoader, loss_function, device):
     model.eval()
@@ -231,48 +247,43 @@ def val_epoch(model: nn.Module, val_loader: DataLoader, loss_function, device):
     total_correct = 0
     total_samples = 0
 
-    with torch.no_grad():
-        for block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch, y_batch in val_loader:
-            # Mover los datos al dispositivo
-            block_features_batch = block_features_batch.to(device)
-            action_blocks_batch = action_blocks_batch.to(device)
-            action_features_batch = action_features_batch.to(device)
-            placed_blocks_batch = placed_blocks_batch.to(device)
-            placed_features_batch = placed_features_batch.to(device)
-            space_features_batch = space_features_batch.to(device)
-            y_batch = y_batch.to(device)
+    # Usamos autocast también en validación para que las activaciones 
+    # tengan el mismo formato que en el entrenamiento
+    with torch.no_grad(), autocast(device.type):
+        for batch in val_loader:
+            # Desempaquetado dinámico para mayor flexibilidad
+            *inputs, y_batch = [i.to(device, non_blocking=True) for i in batch]
 
-            outputs = model.forward(block_features_batch, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch)
-
+            outputs = model(*inputs)
             labels = y_batch.argmax(dim=-1)
             loss = loss_function(outputs, labels)
 
-            # Acumulación de métricas
+            # Métricas
             batch_size = labels.size(0)
-            total_loss += loss.item() * batch_size
+            total_loss += loss.mean().item() * batch_size
             total_correct += (outputs.argmax(dim=1) == labels).sum().item()
             total_samples += batch_size
 
-    loss = total_loss / total_samples
-    accuracy = 100 * total_correct / total_samples
+    return total_loss / total_samples, 100 * total_correct / total_samples
 
-    return loss, accuracy
-
-def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print_epoch_results, model_scorer, device):
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print_epoch_results, model_scorer, patience, device): 
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=train_set.sample_weights, 
         num_samples=len(train_set), 
         replacement=True
     )
 
-    # 2. El DataLoader usa el sampler (shuffle debe ser False al usar sampler)
     train_loader = DataLoader(
         train_set, 
         batch_size=batch_size, 
         sampler=sampler, 
         num_workers=8,
-        pin_memory=True
+        pin_memory=(device.type == "cuda"),
+        prefetch_factor=2,
+        persistent_workers=True
     )
+    
+    scaler = GradScaler(device.type)
 
     test_loaders = []
     val_metrics_list = []
@@ -281,12 +292,15 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print
         test_loaders.append(test_loader)
         val_metrics_list.append(ValMetrics(test_set.name))
 
-    loss_function = torch.nn.CrossEntropyLoss()
+    loss_function = torch.nn.CrossEntropyLoss(reduction='none')
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     train_metrics = Metrics()
 
+    epochs_without_improvement = 0
+    best_score = float("-inf")
+    
     for epoch in range(epochs):
-        train_loss, train_acc = train_epoch(model, train_loader, loss_function, optimizer, device)
+        train_loss, train_acc = train_epoch(model, train_loader, loss_function, optimizer, device, scaler)
         train_metrics.add_epoch(train_loss, train_acc)
 
         for test_loader, val_metrics in zip(test_loaders, val_metrics_list):
@@ -295,6 +309,15 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print
 
         print_epoch_results(epoch, train_metrics, val_metrics_list)
         model_scorer.update_best_model(val_metrics_list)
+        
+        if best_score == model_scorer.best_score:
+            epochs_without_improvement += 1
+        else:
+            best_score = model_scorer.best_score
+            epochs_without_improvement = 0
+
+        if epochs_without_improvement > patience:
+            break
 
     # Al terminar todas las fases, restauramos el mejor modelo
     model = model_scorer.get_best_model()
@@ -302,8 +325,8 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print
 
     return model, train_metrics, val_metrics_list
 
-def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, seed=42):
-    data_manager = DataManager(datasets, train_size, train_weights, test_size, test_weights, seed)
+def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, loss_weights, patience, seed=42):
+    data_manager = DataManager(datasets, train_size, train_weights, test_size, test_weights, loss_weights, seed)
     test_sets = data_manager.get_val_subsets()
     stats = TrainingStats()
     phases = len(datasets)
@@ -323,6 +346,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
 
 
     for phase in range(1, phases+1):
+        if epochs[phase-1] == 0: continue
         train_set = data_manager.get_train_subset(phase)
 
         samples_per_set = [len(test_set) if test_set.name in train_set.names else 0 for test_set in test_sets]
@@ -340,7 +364,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
             val_wgt_loss = sum([val_metrics.loss_history[-1] * test_weights[i] / sum(test_weights) for i, val_metrics in enumerate(val_metrics_list)])
             val_wgt_acc = sum([val_metrics.acc_history[-1] * test_weights[i] / sum(test_weights) for i, val_metrics in enumerate(val_metrics_list)])
 
-            print(f'Epoch {epoch + 1}/{epochs} - '
+            print(f'Epoch {epoch + 1}/{epochs[phase-1]} - '
                 f'Train Loss: {train_metrics.loss_history[-1]:.4f}, '
                 f'Train Accuracy: {train_metrics.acc_history[-1]:.2f}% - '
                 f'Val Loss: {val_epoch_loss:.4f}, Val Accuracy: {val_epoch_acc:.2f}%')
@@ -353,7 +377,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
                 f'Val Loss: {val_wgt_loss:.4f}, Val Accuracy: {val_wgt_acc:.2f}%')
 
         print(f"ℹ️ Iniciando fase: {phase}/{phases}")
-        model, train_metrics, val_metrics = _train(model, epochs, train_set, test_sets, batch_size, learning_rate, print_epoch_results, model_scorer, device)
+        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, print_epoch_results, model_scorer, patience, device)
         stats.add_phase_stats(train_metrics, val_metrics)
 
     return stats

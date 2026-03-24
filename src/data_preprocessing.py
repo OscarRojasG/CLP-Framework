@@ -8,10 +8,16 @@ from settings import DATASETS_FOLDER, DATA_FOLDER
 
 
 class H5Dataset(Dataset):
-    def __init__(self, file_path):
+    def __init__(self, file_path, lazy):
         self.file_path = file_path
-        self._open_file()
         self.name = os.path.basename(file_path)
+        self.file = None
+        
+        with h5py.File(self.file_path, "r") as f:
+            self.dataset_len = len(f["Y"])
+        
+        if not lazy:
+            self._open_file()
 
     def _open_file(self):
         self.file = h5py.File(self.file_path, "r")
@@ -24,9 +30,12 @@ class H5Dataset(Dataset):
         self.Y = self.file["Y"]
 
     def __len__(self):
-        return len(self.Y)
+        return self.dataset_len
 
     def __getitem__(self, idx):
+        if self.file is None:
+            self._open_file()
+            
         return (
             torch.from_numpy(self.block_features[idx]),
             torch.from_numpy(self.action_blocks[idx]),
@@ -124,9 +133,9 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
 
 
 def load_dataset(filepath):
-    dataset = H5Dataset(DATASETS_FOLDER / filepath)
+    dataset = H5Dataset(DATASETS_FOLDER / filepath, lazy=True)
     print(f"Dataset {dataset.name} cargado con {len(dataset)} muestras.")
     return dataset
 
 def load_data(filepath):
-    return H5Dataset(DATA_FOLDER / filepath)
+    return H5Dataset(DATA_FOLDER / filepath, lazy=False)

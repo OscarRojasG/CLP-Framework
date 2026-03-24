@@ -16,6 +16,7 @@ class VCSSolver(GreedySolver):
             text=True
         )
 
-        line = proc.stdout.strip().splitlines()[-1]
-        volume = float(line)
-        return volume
+        lines = proc.stdout.strip().splitlines()
+        volume = float(lines[-3])
+        time = float(lines[-1])
+        return volume, time

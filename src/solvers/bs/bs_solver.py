@@ -26,7 +26,9 @@ class BSM_Solver(BS_Solver):
     
     def solve(self, instance_file, instance_number, w, min_fr):
         bsm = self.load_env(instance_file, instance_number, w, min_fr)
-        return self.solve_from_env(bsm)
+        vol, time = self.solve_from_env(bsm)
+        del bsm
+        return vol, time
     
     @abstractmethod
     def solve_from_env(self, bsm):

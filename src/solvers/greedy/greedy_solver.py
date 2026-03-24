@@ -5,5 +5,5 @@ class GreedySolver(ABC):
         self.name = name
         
     @abstractmethod
-    def solve(self, instance_file, instance_number, min_fr) -> int:
+    def solve(self, instance_file, instance_number, min_fr):
         pass

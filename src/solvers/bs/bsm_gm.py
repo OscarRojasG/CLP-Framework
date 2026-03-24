@@ -55,4 +55,4 @@ class BSM_GM_Solver(BSM_Solver):
                     selected_blocks = action_blocks_batch[rows, best_action_indices].tolist()  
                     bsm.transition_greedy(selected_blocks)
 
-        return bsm.best_volume * 100
+        return bsm.best_volume * 100, bsm.final_time

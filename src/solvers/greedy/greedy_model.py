@@ -41,4 +41,7 @@ class GreedyModelSolver(GreedySolver):
                 
                 env.transition(selected_block)
 
-        return env.volume * 100
+        vol = env.volume * 100
+        time = env.final_time
+        del env
+        return vol, time

@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
-from models.base.attention import CrossAttentionBlock, SelfAttentionBlock
+from models.base.attention import CrossAttentionBlock
 from models.base.transformer import Transformer
 
 class AggregationLayer(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model, ff_dim_multiplier, dropout):
         super().__init__()
-        self.fusion = nn.Linear(4 * d_model, d_model)
+        self.fusion = nn.Sequential(
+            nn.Linear(ff_dim_multiplier * d_model, d_model),
+            nn.Dropout(dropout)
+        )
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x, mask):
@@ -30,13 +33,13 @@ class AggregationLayer(nn.Module):
         return self.norm(out + x)
 
 class MLPEncoder(nn.Module):
-    def __init__(self, d_model, dropout):
+    def __init__(self, d_model, ff_dim_multiplier, dropout):
         super().__init__()
         self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
+            nn.Linear(d_model, d_model * ff_dim_multiplier),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model * 4, d_model),
+            nn.Linear(d_model * ff_dim_multiplier, d_model),
             nn.Dropout(dropout)
         )
         self.norm = nn.LayerNorm(d_model)
@@ -46,7 +49,7 @@ class MLPEncoder(nn.Module):
         return self.norm(x + self.ffn(x))
 
 class CLPTransformer(Transformer):
-    def __init__(self, block_dim, action_dim, placed_dim, space_dim, d_model=256, nhead=8, num_layers=3, dropout=0.1):
+    def __init__(self, block_dim, action_dim, placed_dim, space_dim, d_model=256, nhead=8, num_layers=3, ff_dim_multiplier=4, dropout=0.1):
         super().__init__(
             block_dim=block_dim,
             action_dim=action_dim,
@@ -57,7 +60,6 @@ class CLPTransformer(Transformer):
             num_layers=num_layers,
             dropout=dropout
         )
-        ff_dim_multiplier = 4
         self.d_model = d_model
 
         # Componentes principales
@@ -66,9 +68,9 @@ class CLPTransformer(Transformer):
         self.placed_proj = nn.Linear(placed_dim, d_model)
         self.space_proj = nn.Linear(space_dim, d_model)
         
-        self.block_encoder = MLPEncoder(d_model, dropout)
-        self.action_encoder = MLPEncoder(d_model, dropout)
-        self.placed_encoder = MLPEncoder(d_model, dropout)
+        self.block_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout)
+        self.action_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout)
+        self.placed_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout)
         
         self.block_agg = AggregationLayer(d_model)
         
@@ -76,17 +78,12 @@ class CLPTransformer(Transformer):
         self.final_action_proj = nn.Linear(2*d_model, d_model)
         
         self.ctx_layers = nn.ModuleList([
-            CrossAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
+            CrossAttentionBlock(d_model, nhead, dropout)
             for _ in range(num_layers)
         ])
 
         self.action_layers = nn.ModuleList([
-            CrossAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
-            for _ in range(num_layers)
-        ])
-
-        self.action_self_layers = nn.ModuleList([
-            SelfAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
+            CrossAttentionBlock(d_model, nhead, dropout)
             for _ in range(num_layers)
         ])
 

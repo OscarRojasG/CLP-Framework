@@ -1,6 +1,6 @@
 import subprocess
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pickle
 import h5py
 import numpy as np
@@ -94,8 +94,16 @@ def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1):
 
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for i in range(num_instances):
-            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr)
+        futures = [
+            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr) 
+            for i in range(num_instances)
+        ]
+            
+        completed_count = 0
+        for _ in as_completed(futures):
+            completed_count += 1
+            percentage = (completed_count / num_instances) * 100
+            print(f"\rProgreso: {percentage:.2f}% ({completed_count}/{num_instances})", end="")
 
     print(f"Salida guardada en: {OUTPUT_FOLDER / base_folder}")
 

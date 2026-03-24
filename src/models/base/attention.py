@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 class CrossAttentionBlock(nn.Module):
-    def __init__(self, d_model, nhead, dropout):
+    def __init__(self, d_model, nhead, ff_dim_multiplier, dropout):
         super().__init__()
         
         self.attn = nn.MultiheadAttention(
@@ -13,10 +13,10 @@ class CrossAttentionBlock(nn.Module):
         
         self.norm1 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
-            nn.Linear(d_model, 4*d_model),
+            nn.Linear(d_model, ff_dim_multiplier * d_model),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(4*d_model, d_model),
+            nn.Linear(ff_dim_multiplier * d_model, d_model),
             nn.Dropout(dropout)
         )
         self.norm2 = nn.LayerNorm(d_model)
@@ -36,7 +36,7 @@ class CrossAttentionBlock(nn.Module):
     
 
 class SelfAttentionBlock(nn.Module):
-    def __init__(self, d_model, nhead, dropout):
+    def __init__(self, d_model, nhead, ff_dim_multiplier, dropout):
         super().__init__()
 
         self.attn = nn.MultiheadAttention(
@@ -48,10 +48,10 @@ class SelfAttentionBlock(nn.Module):
 
         self.norm1 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
-            nn.Linear(d_model, 4*d_model),
+            nn.Linear(d_model, ff_dim_multiplier * d_model),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(4*d_model, d_model),
+            nn.Linear(ff_dim_multiplier * d_model, d_model),
             nn.Dropout(dropout)
         )
         self.norm2 = nn.LayerNorm(d_model)

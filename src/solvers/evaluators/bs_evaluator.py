@@ -12,11 +12,9 @@ def bs_eval(solver_list: list[BS_Solver], instance_file: str, num_instances: int
         times = []
         
         for i in range(num_instances):
-            t0 = time.perf_counter()
-            vol = solver.solve(instance_file, i, w, min_fr)
-            t1 = time.perf_counter()
+            vol, time = solver.solve(instance_file, i, w, min_fr)
             vols.append(vol)
-            times.append(t1 - t0)
+            times.append(time)
             
         eval_dict['Vol ' + solver.name] = vols
         eval_dict['Time ' + solver.name] = times

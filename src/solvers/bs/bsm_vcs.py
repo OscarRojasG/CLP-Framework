@@ -36,4 +36,4 @@ class BSM_VCS_Solver(BSM_Solver):
 
                 bsm.transition(selected_action_blocks_batch)
 
-        return bsm.best_volume * 100
+        return bsm.best_volume * 100, bsm.final_time

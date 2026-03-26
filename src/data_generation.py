@@ -1,53 +1,10 @@
 import subprocess
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import pickle
 import h5py
 import numpy as np
 from typing import Dict, List
 from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
-
-
-
-class BlockData:
-    """Información de un bloque."""
-    def __init__(self, block_id: int, metrics: List[float]):
-        self.block_id = block_id
-        self.metrics = metrics
-
-    def __repr__(self):
-        return f"Block(id={self.block_id})"
-
-class ActionData:
-    """Acción que consiste en colocar un bloque con ciertas métricas."""
-    def __init__(self, block: BlockData, metrics: List[float]):
-        self.block = block          # BlockData
-        self.metrics = metrics      # métricas asociadas a la acción
-
-    def __repr__(self):
-        return f"Action(block={self.block.block_id}, metrics={self.metrics})"
-    
-class PlacedBlock:
-    def __init__(self, block: BlockData, features: List[float]):
-        self.block = block
-        self.features = features
-
-class SpaceData:
-    def __init__(self, features):
-        self.features = features
-
-class StateData:
-    """Estado del entorno: conjunto de acciones posibles y la acción elegida."""
-    def __init__(self, actions: List[ActionData], chosen_action: ActionData, placed: List[PlacedBlock], space: SpaceData):            
-        self.actions = actions              
-        self.chosen_action = chosen_action
-        self.placed = placed
-        self.space = space   
-
-    def __repr__(self):
-        chosen = self.chosen_action.block.block_id if self.chosen_action else None
-        return f"State(coords={self.coords}, actions={len(self.actions)}, chosen={chosen})"
-
 
 
 def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
@@ -105,180 +62,136 @@ def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1):
             percentage = (completed_count / num_instances) * 100
             print(f"\rProgreso: {percentage:.2f}% ({completed_count}/{num_instances})", end="")
 
-    print(f"Salida guardada en: {OUTPUT_FOLDER / base_folder}")
+    print(f"\nSalida guardada en: {OUTPUT_FOLDER / base_folder}")
 
 
-def parse_blocks(filepath: str) -> dict[int, BlockData]:
-    """Lee un archivo con formato de bloques y devuelve {block_id: BlockData}."""
-    blocks_info = {}
-    start_reading = False
-
-    with open(filepath, "r") as f:
-        for line in f:
-            line = line.strip()
-
-            # Esperar hasta encontrar "BLOCKS"
-            if not start_reading:
-                if line == "BLOCKS":
-                    start_reading = True
-                continue
-
-            # Terminar si hay una línea vacía
-            if not line:
-                break
-
-            parts = line.split()
-            block_id = int(parts[0])
-            metrics = list(map(float, parts[1:]))
-            blocks_info[block_id] = BlockData(block_id, metrics)
-
-    return blocks_info
-
-
-def parse_states(filepath: str, blocks_info: Dict[int, BlockData]) -> List[StateData]:
-    results = []
-
+def read_output(filepath: str):
+    block_features = []
+    action_blocks_all = []
+    action_features_all = []
+    placed_blocks_all = []
+    placed_features_all = []
+    space_features_all = []
+    selected_blocks_all = []
+    
     with open(filepath, "r") as f:
         lines = [line.strip() for line in f if line.strip()]
-
+        
     i = 0
     n = len(lines)
     while i < n:
+        if lines[i] == "BLOCKS":
+            i += 1
+            while i < n and lines[i] != "SOLVE STEPS":
+                parts = lines[i].split()
+                metrics = list(map(float, parts))
+                block_features.append(metrics)
+                i += 1
+        
         if lines[i] == "Actions":
             i += 1
-            actions_raw = []
-
-            # --- Actions ---
+            action_blocks = []
+            action_features = []
             while i < n and lines[i] != "Placed":
                 parts = lines[i].split()
-                act_id = int(parts[0])
-                metrics = list(map(float, parts[1:]))
-                actions_raw.append((act_id, metrics))
+                act_block = int(parts[0])
+                act_feat = list(map(float, parts[1:]))
+                action_blocks.append(act_block)
+                action_features.append(act_feat)
                 i += 1
+            action_blocks_all.append(action_blocks)
+            action_features_all.append(action_features)
 
-            # --- Placed (puede estar vacío) ---
+        if lines[i] == "Placed":
+            i += 1
             placed_blocks = []
-            if i < n and lines[i] == "Placed":
+            placed_features = []
+            while i < n and lines[i] != "Space":
+                parts = lines[i].split()
+                pl_block = int(parts[0])
+                pl_feat = list(map(float, parts[1:]))
+                placed_blocks.append(pl_block)
+                placed_features.append(pl_feat)
                 i += 1
-                while i < n and lines[i] != "Space":
-                    parts = lines[i].split()
-                    block_id = int(parts[0])
-                    features = list(map(float, parts[1:]))
-                    placed_blocks.append(PlacedBlock(blocks_info[block_id], features))
-                    i += 1
-                    
-            # --- Espacio ---
-            i += 1  # saltar "Space"
-            space = SpaceData(list(map(float, lines[i].split())))
+            placed_blocks_all.append(placed_blocks)
+            placed_features_all.append(placed_features)
+                
+        if lines[i] == "Space":
             i += 1
-
-            # --- Selected Block ---
-            i += 1  # saltar "Selected Block"
-            chosen_block_id = int(lines[i])
+            sp_feat = list(map(float, lines[i].split()))
+            space_features_all.append(sp_feat)
+            
+        if lines[i] == "Selected Block":
             i += 1
-
-            # --- Crear objetos ---
-            actions = [
-                ActionData(blocks_info[act_id], metrics)
-                for act_id, metrics in actions_raw
-            ]
-            chosen_action = next(
-                a for a in actions if a.block.block_id == chosen_block_id
-            )
-
-            results.append(StateData(actions, chosen_action, placed_blocks, space))
-
-        else:
-            i += 1
-
-    return results
-
-
-def get_w(filename: str) -> int:
-    with open(filename, 'r', encoding='utf-8') as f:
-        for line in f:
-            if "Beam width:" in line:
-                # Extraer la parte después de los dos puntos y convertir a int
-                try:
-                    return int(line.split(":")[1].strip())
-                except ValueError:
-                    raise ValueError(f"No se pudo convertir el beam width a entero en línea: {line.strip()}")
-
-    raise ValueError(f"No se encontró 'Beam width:' en el archivo {filename}")
+            selected_block = int(lines[i])
+            selected_blocks_all.append(selected_block)
+            
+        i += 1
+        
+    return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all
 
 
 def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, padding_placed=64):
-    # --- Cargar datos ---
-    blocks_info = parse_blocks(filename)
-    states = parse_states(filename, blocks_info)
-
-    # --- Mapa global de índices (basado en X_src) ---
-    block_ids = list(blocks_info.keys())
-    global_index_map = {block_id: idx for idx, block_id in enumerate(block_ids)}
-
-    # --- bloques fijos ---
-    block_features = np.array(
-        [blocks_info[b_id].metrics for b_id in block_ids],
-        dtype=float
-    )
+    block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all = read_output(filename)
+    num_states = len(action_features_all)
     
+    # Padding bloques
+    block_features = np.array(block_features, dtype=float)    
     n = block_features.shape[0]
     pad_len = max(0, padding_blocks - n)
-    
     if pad_len > 0:
         block_features = np.pad(block_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
-
-    block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, spaces_all, Y_all = [], [], [], [], [], [], []
-
-    # --- Recorremos los estados ---
-    for state in states:
-        # --- Acciones disponibles ---
-        # [1:] Ignoramos eval (VCS)
-        action_features = np.array([action.metrics[1:] for action in state.actions], dtype=float)
-        action_blocks = np.array([global_index_map[action.block.block_id] for action in state.actions], dtype=int)
-
-        if len(action_features) < min_actions:
+        
+    np_block_features = []
+    np_action_blocks = []
+    np_action_features = []
+    np_placed_blocks = []
+    np_placed_features = []
+    np_space_features = []
+    np_Y = []
+    
+    for i in range(num_states):
+        if len(action_features_all[i]) < min_actions:
             continue
-
-        # --- Etiqueta one-hot ---
-        num_actions = len(state.actions)
-        Y = np.zeros(num_actions, dtype=int)
-        for i, action in enumerate(state.actions):
-            if action.block.block_id == state.chosen_action.block.block_id:
-                Y[i] = 1
+        
+        # Etiqueta one-hot
+        Y = np.zeros(min_actions, dtype=int)
+        selected_block = selected_blocks_all[i]
+        action_blocks = action_blocks_all[i]
+        
+        for j, action_block in enumerate(action_blocks):
+            if action_block == selected_block:
+                Y[j] = 1
                 break
-
-        # --- Bloques colocados ---
-        placed_features = np.array([placed.features for placed in state.placed], dtype=float).reshape(-1, 4)
-        placed_blocks = np.array([global_index_map[placed.block.block_id] for placed in state.placed], dtype=int)
-
-        n = placed_features.shape[0]
+            
+        # Padding bloques colocados
+        placed_blocks = np.array(placed_blocks_all[i], dtype=int)
+        placed_features = np.array(placed_features_all[i], dtype=float).reshape(-1, 4)
+        
+        n = placed_blocks.shape[0]
         pad_len = max(0, padding_placed - n)
 
         if pad_len > 0:
-            placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
             placed_blocks = np.pad(placed_blocks, pad_width=(0, pad_len), mode='constant', constant_values=-1)
-            
-        # --- Espacio ---
-        space_features = np.array(state.space.features, dtype=float)
-
-        # --- Agregar estado ---
-        block_features_all.append(block_features)
-        action_features_all.append(action_features)
-        action_blocks_all.append(action_blocks)
-        placed_features_all.append(placed_features)
-        placed_blocks_all.append(placed_blocks)
-        spaces_all.append(space_features)
-        Y_all.append(Y)
-
+            placed_features = np.pad(placed_features, pad_width=((0, pad_len), (0, 0)), mode='constant', constant_values=-1)
+    
+        # Añadir a listas
+        np_block_features.append(block_features)
+        np_action_blocks.append(np.array(action_blocks_all[i], dtype=int))
+        np_action_features.append(np.array(action_features_all[i], dtype=float))
+        np_placed_blocks.append(placed_blocks)  
+        np_placed_features.append(placed_features)
+        np_space_features.append(np.array(space_features_all[i], dtype=float))  
+        np_Y.append(Y)
+    
     return (
-        np.array(block_features_all, dtype=np.float32),
-        np.array(action_blocks_all, dtype=np.int32),
-        np.array(action_features_all, dtype=np.float32),
-        np.array(placed_blocks_all, dtype=np.int32),
-        np.array(placed_features_all, dtype=np.float32),
-        np.array(spaces_all, dtype=np.float32),
-        np.array(Y_all, dtype=np.float32)
+        np.array(np_block_features, dtype=np.float32),
+        np.array(np_action_blocks, dtype=np.int32),
+        np.array(np_action_features, dtype=np.float32),
+        np.array(np_placed_blocks, dtype=np.int32),
+        np.array(np_placed_features, dtype=np.float32),
+        np.array(np_space_features, dtype=np.float32),
+        np.array(np_Y, dtype=np.float32)
     )
 
 

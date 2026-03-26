@@ -225,3 +225,4 @@ experiments/*.csv
 
 !instances/benchmarks/
 !instances/benchmarks/**
+!src/*.so

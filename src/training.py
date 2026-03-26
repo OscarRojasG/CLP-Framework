@@ -167,15 +167,11 @@ class DataManager:
         for i in range(phase):
             dataset = self.all_datasets[i]
             
-            # 1. Identificamos qué datos son de TEST para excluirlos
+            # Identificamos qué datos son de TEST para excluirlos
             test_size_i = int(self.test_size * active_test_weights[i] / total_test_w)
             val_subset, complement_set = random_split(
                 dataset, [test_size_i, len(dataset) - test_size_i]
             )
-            
-            # 2. De lo que sobra (complement_set), sacamos la cuota de TRAIN
-            # Usamos una semilla diferente (+phase) para que el muestreo de TRAIN varíe por fase
-            torch.manual_seed(self.seed + phase)
             
             train_size_i = int(self.train_size * active_train_weights[i] / total_tw)
             if train_size_i == 0: continue

@@ -4,10 +4,10 @@ from models.base.attention import CrossAttentionBlock
 from models.base.transformer import Transformer
 
 class AggregationLayer(nn.Module):
-    def __init__(self, d_model, ff_dim_multiplier, dropout):
+    def __init__(self, d_model, dropout):
         super().__init__()
         self.fusion = nn.Sequential(
-            nn.Linear(ff_dim_multiplier * d_model, d_model),
+            nn.Linear(4 * d_model, d_model),
             nn.Dropout(dropout)
         )
         self.norm = nn.LayerNorm(d_model)
@@ -58,6 +58,7 @@ class CLPTransformer(Transformer):
             d_model=d_model,
             nhead=nhead,
             num_layers=num_layers,
+            ff_dim_multiplier=ff_dim_multiplier,
             dropout=dropout
         )
         self.d_model = d_model
@@ -72,18 +73,18 @@ class CLPTransformer(Transformer):
         self.action_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout)
         self.placed_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout)
         
-        self.block_agg = AggregationLayer(d_model)
+        self.block_agg = AggregationLayer(d_model, dropout)
         
         self.final_placed_proj = nn.Linear(2*d_model, d_model)
         self.final_action_proj = nn.Linear(2*d_model, d_model)
         
         self.ctx_layers = nn.ModuleList([
-            CrossAttentionBlock(d_model, nhead, dropout)
+            CrossAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
             for _ in range(num_layers)
         ])
 
         self.action_layers = nn.ModuleList([
-            CrossAttentionBlock(d_model, nhead, dropout)
+            CrossAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
             for _ in range(num_layers)
         ])
 

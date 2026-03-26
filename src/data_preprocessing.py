@@ -61,7 +61,7 @@ def generate_datasets_(filename, start_cut, end_cut):
     # Solo recorremos Y para filtrar, evitando cargar todo a RAM
     for i in range(len(dataset_obj.Y)):
         pos = int(np.argmax(dataset_obj.Y[i]))
-        if start_cut <= pos <= end_cut:
+        if start_cut - 1 <= pos <= end_cut - 1:
             indices_in_range.append(i)
             
     dataset_obj.close()

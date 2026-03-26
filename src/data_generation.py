@@ -3,7 +3,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import h5py
 import numpy as np
-from typing import Dict, List
 from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
 
 
@@ -26,17 +25,14 @@ def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
     output_file_path = os.path.join(dest_dir, f"{base_filename}-{i}.out")
 
     # Ejecutar el proceso y capturar la salida
-    proc = subprocess.run(
-        [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--min_fr={min_fr}", f"--verbose2={str(w*w)}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        text=True
-    )
-
-    # Guardar la salida en el archivo de salida
     with open(output_file_path, 'w') as f:
-        f.write(proc.stdout)
+        subprocess.run(
+            [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--min_fr={min_fr}", f"--verbose2={str(w*w)}"],
+            stdout=f,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            text=True
+        )
 
 
 def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1):
@@ -197,7 +193,8 @@ def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, pad
 
 def generate_data_from_folder(folder_path):
     block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, space_features_all, Y_all = [], [], [], [], [], [], []
-
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    
     # Iterar sobre todos los archivos en la carpeta
     for filename in os.listdir(OUTPUT_FOLDER / folder_path):
         file_path = os.path.join(OUTPUT_FOLDER / folder_path, filename)

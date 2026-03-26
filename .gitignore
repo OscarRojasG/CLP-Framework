@@ -222,3 +222,6 @@ models/**
 outputs/**
 stats/**
 experiments/*.csv
+
+!instances/benchmarks/
+!instances/benchmarks/**

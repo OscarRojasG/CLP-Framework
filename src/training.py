@@ -125,66 +125,66 @@ class DataManager:
         self.train_weights = train_weights
         self.test_size = test_size
         self.test_weights = test_weights
-        self.seed = seed
         
-        # Guardamos los datasets originales para sacar subsets frescos en cada fase
-        self.all_datasets = datasets
+        self.generator = torch.Generator().manual_seed(seed)
+        
+        self.split_datasets = []
+        for i, dataset in enumerate(datasets):
+            val_part, train_part = random_split(
+                dataset, 
+                [test_size, len(dataset) - test_size],
+                generator=self.generator
+            )
+            
+            self.split_datasets.append({
+                'train_pool': train_part,
+                'val_pool': val_part,
+                'name': dataset.name
+            })
 
     def get_val_subsets(self, phase):
-        torch.manual_seed(self.seed + phase)
         active_test_subsets = []
-        
         active_weights = self.test_weights[:phase]
         total_test_w = sum(active_weights)
 
         for i in range(phase):
-            dataset = self.all_datasets[i]
-            # Calculamos cuánto le toca a este dataset de la cuota total
+            entry = self.split_datasets[i]
             subset_size = int(self.test_size * active_weights[i] / total_test_w)
             
             if subset_size == 0: continue
             
-            # Sacamos el subset de validación
-            # Nota: No usamos complement_set aquí porque lo gestionamos en get_train_subset
             val_subset, _ = random_split(
-                dataset, [subset_size, len(dataset) - subset_size]
+                entry['val_pool'], 
+                [subset_size, len(entry['val_pool']) - subset_size],
+                generator=torch.Generator().manual_seed(42)
             )
-            active_test_subsets.append(ValSubset(subset=val_subset, name=dataset.name))
+            active_test_subsets.append(ValSubset(subset=val_subset, name=entry['name']))
             
         return active_test_subsets
 
     def get_train_subset(self, phase):
-        torch.manual_seed(self.seed + phase)
         train_subsets = []
         dataset_names = []
         
         active_train_weights = self.train_weights[:phase]
-        active_test_weights = self.test_weights[:phase]
-        
         total_tw = sum(active_train_weights)
-        total_test_w = sum(active_test_weights)
 
         for i in range(phase):
-            dataset = self.all_datasets[i]
-            
-            # Identificamos qué datos son de TEST para excluirlos
-            test_size_i = int(self.test_size * active_test_weights[i] / total_test_w)
-            val_subset, complement_set = random_split(
-                dataset, [test_size_i, len(dataset) - test_size_i]
-            )
-            
+            entry = self.split_datasets[i]
             train_size_i = int(self.train_size * active_train_weights[i] / total_tw)
+            
             if train_size_i == 0: continue
             
-            # Si el complement_set es más pequeño que la cuota pedida, usamos todo el complement
-            actual_train_size = min(train_size_i, len(complement_set))
+            actual_train_size = min(train_size_i, len(entry['train_pool']))
             
             train_subset, _ = random_split(
-                complement_set, [actual_train_size, len(complement_set) - actual_train_size]
+                entry['train_pool'], 
+                [actual_train_size, len(entry['train_pool']) - actual_train_size],
+                generator=torch.Generator().manual_seed(42)
             )
             
             train_subsets.append(train_subset)
-            dataset_names.append(dataset.name)
+            dataset_names.append(entry['name'])
 
         return TrainSubset(train_subsets, dataset_names, active_train_weights)
     

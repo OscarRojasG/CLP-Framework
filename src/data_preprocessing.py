@@ -52,6 +52,47 @@ class H5Dataset(Dataset):
             torch.from_numpy(self.space_features[idx]),
             torch.tensor(self.Y[idx])
         )
+    
+class DatasetWithBias(H5Dataset):
+    def __init__(self, file_path, lazy=False):
+        super().__init__(file_path, lazy)
+
+    def __getitem__(self, idx):
+        # 1. Obtenemos los datos base de la clase padre
+        data = super().__getitem__(idx)
+        (block_features, action_blocks, action_features, 
+         placed_blocks, placed_features, space_features, y) = data
+
+        # 2. Extraemos los índices de bloques para las acciones
+        # action_blocks tiene forma [Na]. Usamos clamp para evitar errores con el padding (-1)
+        valid_indices = action_blocks.clamp(min=0).long()
+
+        # 3. Extraemos componentes para la fórmula
+        # block_features[idx][3] es x, [4] es y, etc.
+        # Asumiendo block_features: [N_total_bloques, Dim_features]
+        # Asumiendo action_features: [Na, Dim_action_features]
+        
+        vol = block_features[valid_indices, 3]
+        n_frac = block_features[valid_indices, 4]
+        
+        # action_features[i][0] y [1]
+        loss = action_features[:, 0]
+        cs = action_features[:, 1]
+
+        # 4. Aplicamos la fórmula de la heurística
+        # h = x * y^γ * (1 - feat_2)^β * feat_3^α
+        alpha=4.0
+        beta=1.0
+        gamma=0.2
+        bias = (vol * (n_frac ** gamma) * ((1 - loss) ** beta) * (cs ** alpha))
+
+        # 5. Manejo de Padding: Si action_blocks era -1, el bias debe ser -inf o 0 
+        # para que no influya. log_softmax se encargará del resto en el modelo.
+        mask = (action_blocks == -1)
+        bias[mask] = -np.inf # O un valor muy bajo
+
+        # Retornamos todo el pack original + el nuevo bias
+        return (*data[:-1], bias, y)
 
 def generate_datasets_(filename, start_cut, end_cut):
     """Retorna los índices dentro de un archivo que caen en el rango [start, end]."""
@@ -136,8 +177,12 @@ def save_to_h5(data_dict, basename, start, end):
     
     print(f"Dataset guardado en: {output_path} (Tamaño {len(value)})")
 
-def load_dataset(filepath):
-    dataset = H5Dataset(DATASETS_FOLDER / filepath, lazy=True)
+def load_dataset(filepath, bias=False):
+    if bias:
+        dataset = DatasetWithBias(DATASETS_FOLDER / filepath, lazy=True)
+    else:
+        dataset = H5Dataset(DATASETS_FOLDER / filepath, lazy=True)
+
     print(f"Dataset {dataset.name} cargado con {len(dataset)} muestras.")
     return dataset
 

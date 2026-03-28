@@ -7,6 +7,7 @@ import h5py
 from collections import defaultdict
 from torch.utils.data import Dataset
 from settings import DATASETS_FOLDER, DATA_FOLDER
+import settings
 
 
 class H5Dataset(Dataset):
@@ -172,16 +173,16 @@ def save_to_h5(data_dict, basename, start, end):
     
     with h5py.File(output_path, "w") as f:
         for key, value in data_dict.items():
-            dtype = np.int32 if key in ["Y", "action_blocks", "placed_blocks"] else np.float32
+            dtype = np.int32 if key in ["action_blocks", "placed_blocks"] else np.float32
             f.create_dataset(key, data=np.array(value, dtype=dtype))
     
     print(f"Dataset guardado en: {output_path} (Tamaño {len(value)})")
 
 def load_dataset(filepath, bias=False):
     if bias:
-        dataset = DatasetWithBias(DATASETS_FOLDER / filepath, lazy=True)
+        dataset = DatasetWithBias(settings.DATASETS_FOLDER / filepath, lazy=True)
     else:
-        dataset = H5Dataset(DATASETS_FOLDER / filepath, lazy=True)
+        dataset = H5Dataset(settings.DATASETS_FOLDER / filepath, lazy=True)
 
     print(f"Dataset {dataset.name} cargado con {len(dataset)} muestras.")
     return dataset

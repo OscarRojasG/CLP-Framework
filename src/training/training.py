@@ -376,7 +376,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
                 print()
 
         print(f"ℹ️ Iniciando fase: {phase}/{phases}")
-        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device)
+        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate[phase-1], weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device)
         #stats.add_phase_stats(train_metrics, val_metrics)
 
     #return stats

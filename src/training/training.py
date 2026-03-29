@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from settings import MODELS_FOLDER, HYPERPARAMS_FOLDER
 from torch.amp import GradScaler, autocast
 from misc.labels import LabelType
+from training.metrics import *
 
 
 class Metrics:
@@ -22,16 +23,10 @@ class Metrics:
         self.acc_history.append(acc)
 
 
-class ValMetrics(Metrics):
-    def __init__(self, subset_name):
-        super().__init__()
-        self.subset_name = subset_name
-
-
 class TrainingStats():
     def __init__(self):
         self.train_metrics : list[Metrics] = [] 
-        self.val_metrics : list[list[ValMetrics]] = []
+        self.val_metrics : list[list[Metrics]] = []
         self.phases = 0
 
     def add_phase_stats(self, train_metrics, val_metrics):
@@ -214,11 +209,8 @@ class ModelScorer:
         return self.model
     
     
-def train_epoch(model, train_loader, optimizer, loss_function, device, scaler):
+def train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler):
     model.train()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
 
     for *inputs, y_batch in train_loader:
         # Transferencia asíncrona
@@ -230,33 +222,21 @@ def train_epoch(model, train_loader, optimizer, loss_function, device, scaler):
         # Autocast para precisión mixta (FP16)
         with autocast(device.type):
             logits = model(*inputs)
-            loss = loss_function(logits, y_batch)
+            loss = loss_function.step(logits, y_batch)
+            for metric in metrics: metric.step(y_batch, logits)
 
         # Escalamiento de gradientes para evitar subdesbordamiento (underflow)
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
-        # Métricas (Intentamos minimizar el paso de datos GPU -> CPU)
-        with torch.no_grad():
-            batch_size = y_batch.size(0)
-            total_loss += loss.item() * batch_size
-            max_val, _ = y_batch.max(dim=-1, keepdim=True)
-            is_best = (y_batch == max_val)
-            pred_idx = logits.argmax(dim=-1)
-            total_correct += is_best[torch.arange(batch_size), pred_idx].sum().item()
-            total_samples += batch_size
+    loss = loss_function.compute()
+    values = [metric.compute() for metric in metrics]
 
-    loss = total_loss / total_samples
-    accuracy = 100 * total_correct / total_samples
+    return loss, values
 
-    return loss, accuracy
-
-def val_epoch(model, val_loader, loss_function, device):
+def val_epoch(model, val_loader, loss_function, metrics, device):
     model.eval()
-    total_loss = 0
-    total_correct = 0
-    total_samples = 0
 
     # Usamos autocast también en validación para que las activaciones 
     # tengan el mismo formato que en el entrenamiento
@@ -265,23 +245,15 @@ def val_epoch(model, val_loader, loss_function, device):
             # Desempaquetado dinámico para mayor flexibilidad
             *inputs, y_batch = [i.to(device, non_blocking=True) for i in batch]
             logits = model(*inputs)
-            loss = loss_function(logits, y_batch)
+            loss = loss_function.step(logits, y_batch)
+            for metric in metrics: metric.step(y_batch, logits)
 
-            # Métricas
-            batch_size = y_batch.size(0)
-            total_loss += loss.item() * batch_size
-            max_val, _ = y_batch.max(dim=-1, keepdim=True)
-            is_best = (y_batch == max_val)
-            pred_idx = logits.argmax(dim=-1)
-            total_correct += is_best[torch.arange(batch_size), pred_idx].sum().item()
-            total_samples += batch_size
+    loss = loss_function.compute()
+    values = [metric.compute() for metric in metrics]
 
-    loss = total_loss / total_samples
-    accuracy = 100 * total_correct / total_samples
+    return loss, values
 
-    return loss, accuracy
-
-def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, device): 
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device): 
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=train_set.sample_weights, 
         num_samples=len(train_set), 
@@ -302,28 +274,33 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
     scaler = GradScaler(device.type)
 
     test_loaders = []
-    val_metrics_list = []
     for test_set in test_sets: 
         test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         test_loaders.append(test_loader)
-        val_metrics_list.append(ValMetrics(test_set.name))
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     train_metrics = Metrics()
 
     epochs_without_improvement = 0
     best_score = float("-inf")
+
+    train_metrics = EpochMetrics()
+    val_metrics = EpochMetrics()
     
     for epoch in range(epochs):
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, loss_function, device, scaler)
-        train_metrics.add_epoch(train_loss, train_acc)
+        loss, values = train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler)
+        train_metrics.add_value("train", loss_function, loss)
+        for i, value in enumerate(values):
+            train_metrics.add_value("train", metrics[i], value)
 
-        for test_loader, val_metrics in zip(test_loaders, val_metrics_list):
-            val_loss, val_acc = val_epoch(model, test_loader, loss_function, device)
-            val_metrics.add_epoch(val_loss, val_acc)
+        for test_loader in test_loaders:
+            loss, values = val_epoch(model, test_loader, loss_function, metrics, device)
+            for i, value in enumerate(values):
+                val_metrics.add_value(test_loader.dataset.name, metrics[i], value)
+            val_metrics.add_value(test_loader.dataset.name, loss_function, loss)
 
-        print_epoch_results(epoch, train_metrics, val_metrics_list)
-        model_scorer.update_best_model(val_metrics_list)
+        print_epoch_results(epoch, train_metrics, val_metrics)
+        model_scorer.update_best_model(val_metrics)
         
         if best_score == model_scorer.best_score:
             epochs_without_improvement += 1
@@ -338,11 +315,11 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
     model = model_scorer.get_best_model()
     model_scorer.print_best_score()
 
-    return model, train_metrics, val_metrics_list
+    return model, train_metrics, val_metrics
 
-def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, weight_decay, patience, seed=42):
+def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, weight_decay, patience, metrics, seed=42):
     data_manager = DataManager(datasets, train_size, train_weights, test_size, test_weights, seed)
-    stats = TrainingStats()
+    #stats = TrainingStats()
     phases = len(datasets)
     
     def print_best_score(best_score):
@@ -357,18 +334,11 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     torch.manual_seed(seed)
     torch.set_num_threads(os.cpu_count())
     model = model.to(device)
-
-    def kl_div_loss(logits, y):
-        tau = 0.1
-        y = torch.softmax(y / tau, dim=-1)
-        log_preds = F.log_softmax(logits, dim=-1)
-        return F.kl_div(log_preds, y, reduction='batchmean')
     
     if datasets[0].label_type == LabelType.BEST_ACTION.value:
-        loss_function = lambda logits, y: torch.nn.functional.cross_entropy(logits, y)
+        loss_function = CrossEntropyLoss()
     else:
-        loss_function = kl_div_loss
-
+        loss_function = KL_Divergence(tau=0.1)
 
     for phase in range(1, phases+1):
         if epochs[phase-1] == 0: continue
@@ -378,35 +348,38 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
         samples_per_set = [len(test_set) for test_set in test_sets]
         epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
 
-        def score_function(val_metrics_list):
-            return -sum([val_metrics.loss_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
+        def score_function(val_metrics):
+            return -sum([val_metrics.subset_metrics[dataset][loss_function][-1] * epoch_weights[i] / sum(epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
         
         model_scorer = ModelScorer(model, score_function, print_best_score)
 
-        def print_epoch_results(epoch, train_metrics, val_metrics_list):
-            val_epoch_loss = sum([val_metrics.loss_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
-            val_epoch_acc = sum([val_metrics.acc_history[-1] * epoch_weights[i] / sum(epoch_weights) for i, val_metrics in enumerate(val_metrics_list)])
+        def print_epoch_results(epoch, train_metrics, val_metrics):
+            print(f'{'\n' if epoch == 0 else ''}Epoch {epoch + 1}/{epochs[phase-1]}')
+            val_epoch_loss = sum([val_metrics.subset_metrics[dataset][loss_function][-1] * epoch_weights[i] / sum(epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
+            train_epoch_loss = train_metrics.subset_metrics["train"][loss_function][-1]
+            print(f"    Average - Train Loss: {loss_function.format(train_epoch_loss)} | Val Loss: {loss_function.format(val_epoch_loss)}", end='')
 
-            val_wgt_loss = sum([val_metrics.loss_history[-1] * test_weights[i] / sum(test_weights) for i, val_metrics in enumerate(val_metrics_list)])
-            val_wgt_acc = sum([val_metrics.acc_history[-1] * test_weights[i] / sum(test_weights) for i, val_metrics in enumerate(val_metrics_list)])
+            for metric in train_metrics.subset_metrics["train"]:
+                if metric == loss_function: continue
+                val_epoch_metric = 0
+                for i, dataset in enumerate(val_metrics.subset_metrics.keys()):
+                    val_epoch_metric += val_metrics.subset_metrics[dataset][metric][-1] * epoch_weights[i] / sum(epoch_weights)
+                print(f' | {metric.name}: {metric.format(val_epoch_metric)}', end='')
+            print()
 
-            print(f'Epoch {epoch + 1}/{epochs[phase-1]} - '
-                f'Train Loss: {train_metrics.loss_history[-1]:.4f}, '
-                f'Train Accuracy: {train_metrics.acc_history[-1]:.2f}% - '
-                f'Val Loss: {val_epoch_loss:.4f}, Val Accuracy: {val_epoch_acc:.2f}%')
-
-            for i, val_metrics in enumerate(val_metrics_list):
-                print(f'    Test Set: {val_metrics.subset_name} - '
-                    f'Val Loss: {val_metrics.loss_history[-1]:.4f}, Val Accuracy: {val_metrics.acc_history[-1]:.2f}%')
-
-            print(f'    Weighted - '
-                f'Val Loss: {val_wgt_loss:.4f}, Val Accuracy: {val_wgt_acc:.2f}%')
+            for i, dataset in enumerate(val_metrics.subset_metrics.keys()):
+                print(f"    Dataset {dataset} - ", end='')
+                for j, metric in enumerate(val_metrics.subset_metrics[dataset]):
+                    if metric != loss_function:
+                        val_epoch_metric = val_metrics.subset_metrics[dataset][metric][-1]
+                        print(f'{' | ' if j > 0 else ''}{metric.name}: {metric.format(val_epoch_metric)}', end='')
+                print()
 
         print(f"ℹ️ Iniciando fase: {phase}/{phases}")
-        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, device)
-        stats.add_phase_stats(train_metrics, val_metrics)
+        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device)
+        #stats.add_phase_stats(train_metrics, val_metrics)
 
-    return stats
+    #return stats
 
 def save_model(model, model_name):
     os.makedirs(HYPERPARAMS_FOLDER, exist_ok=True)

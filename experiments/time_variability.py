@@ -4,7 +4,7 @@ import statistics
 import pandas as pd
 from solvers.timed.timed_bsm_vcs import Timed_BSM_VCS_Solver
 from models.CLPTransformer_v4 import CLPTransformer
-from training import load_model
+from training.training import load_model
 
 model_name = "CLPTransformer_v4_CL"
 instance_file = "benchmarks/BR4.txt"

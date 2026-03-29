@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import h5py
 import numpy as np
 from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
+from misc.labels import LabelType
 
 
 def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
@@ -70,6 +71,7 @@ def read_output(filepath: str):
     space_features_all = []
     selected_blocks_all = []
     greedy_evals_all = []
+    vcs_evals_all = []
     
     with open(filepath, "r") as f:
         lines = [line.strip() for line in f if line.strip()]
@@ -90,18 +92,22 @@ def read_output(filepath: str):
             action_blocks = []
             action_features = []
             greedy_evals = []
+            vcs_evals = []
             while i < n and lines[i] != "Placed":
                 parts = lines[i].split()
                 act_block = int(parts[0])
                 act_feat = list(map(float, parts[3:]))
                 gr_eval = float(parts[1])
+                vcs_eval = float(parts[2])
                 action_blocks.append(act_block)
                 action_features.append(act_feat)
                 greedy_evals.append(gr_eval)
+                vcs_evals.append(vcs_eval)
                 i += 1
             action_blocks_all.append(action_blocks)
             action_features_all.append(action_features)
             greedy_evals_all.append(greedy_evals)
+            vcs_evals_all.append(vcs_evals)
 
         if lines[i] == "Placed":
             i += 1
@@ -129,11 +135,11 @@ def read_output(filepath: str):
             
         i += 1
         
-    return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, greedy_evals_all
+    return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, greedy_evals_all, vcs_evals_all
 
 
-def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, padding_placed=64):
-    block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, _, greedy_evals_all = read_output(filename)
+def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST_ACTION, padding_blocks=10000, padding_placed=64):
+    block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, greedy_evals_all, _ = read_output(filename)
     num_states = len(action_features_all)
     
     # Padding bloques
@@ -157,16 +163,27 @@ def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, pad
         
         # Etiqueta
         Y = np.zeros(min_actions, dtype=float)
-        sorted_evals = sorted(greedy_evals_all[i], reverse=True)
-        ranking_dict = {}
-        for j, greedy_eval in enumerate(sorted_evals):
-            if greedy_eval not in ranking_dict:
-                    ranking_dict[greedy_eval] = j + 1
 
-        for j, greedy_eval in enumerate(greedy_evals_all[i]):
-            Y[j] = ranking_dict[greedy_eval]
+        if label_type == LabelType.RANKING:
+            Y = np.zeros(min_actions, dtype=float)
+            sorted_evals = sorted(greedy_evals_all[i], reverse=True)
+            ranking_dict = {}
+            for j, greedy_eval in enumerate(sorted_evals):
+                if greedy_eval not in ranking_dict:
+                        ranking_dict[greedy_eval] = j + 1
 
-        Y = 1.0 / Y
+            for j, greedy_eval in enumerate(greedy_evals_all[i]):
+                Y[j] = ranking_dict[greedy_eval]
+
+            Y = 1.0 / Y
+        else:
+            selected_block = selected_blocks_all[i]
+            action_blocks = action_blocks_all[i]
+            
+            for j, action_block in enumerate(action_blocks):
+                if action_block == selected_block:
+                    Y[j] = 1
+                    break
             
         # Padding bloques colocados
         placed_blocks = np.array(placed_blocks_all[i], dtype=int)
@@ -195,17 +212,17 @@ def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, pad
         np.array(np_placed_blocks, dtype=np.int32),
         np.array(np_placed_features, dtype=np.float32),
         np.array(np_space_features, dtype=np.float32),
-        np.array(np_Y, dtype=np.float32)
+        np.array(np_Y, dtype=np.float32),
     )
 
 
-def generate_data_from_folder(folder_path):
+def generate_data_from_folder(folder_path, label_type=LabelType.BEST_ACTION, filename=None):
     block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, space_features_all, Y_all = [], [], [], [], [], [], []
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
     # Iterar sobre todos los archivos en la carpeta
-    for filename in os.listdir(OUTPUT_FOLDER / folder_path):
-        file_path = os.path.join(OUTPUT_FOLDER / folder_path, filename)
+    for input_filename in os.listdir(OUTPUT_FOLDER / folder_path):
+        file_path = os.path.join(OUTPUT_FOLDER / folder_path, input_filename)
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
@@ -221,9 +238,10 @@ def generate_data_from_folder(folder_path):
             Y_all.extend(Y)
 
     # Definir el nombre del archivo de salida basado en el nombre de la carpeta
-    folder_name = os.path.basename(folder_path)
-    output_filename = folder_name.split('.')[0] + ".data"
-    output_path = DATA_FOLDER / output_filename
+    if filename == None:
+        folder_name = os.path.basename(folder_path)
+        filename = folder_name.split('.')[0] + ".data"
+    output_path = DATA_FOLDER / filename
 
     # Guardar los datos
     with h5py.File(output_path, "w") as f:
@@ -233,6 +251,7 @@ def generate_data_from_folder(folder_path):
         f.create_dataset("placed_blocks", data=np.array(placed_blocks_all, dtype=np.int32))
         f.create_dataset("placed_features", data=np.array(placed_features_all, dtype=np.float32))
         f.create_dataset("space_features", data=np.array(space_features_all, dtype=np.float32))
-        f.create_dataset("Y", data=np.array(Y_all, dtype=np.float32))
+        Y = f.create_dataset("Y", data=np.array(Y_all, dtype=np.float32))
+        Y.attrs["label_type"] = label_type.value
 
     print(f"Datos guardados en: {output_path}")

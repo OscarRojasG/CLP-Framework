@@ -18,6 +18,7 @@ class H5Dataset(Dataset):
         
         with h5py.File(self.file_path, "r") as f:
             self.dataset_len = len(f["Y"])
+            self.label_type = f["Y"].attrs["label_type"]
         
         if not lazy:
             self._open_file()
@@ -162,12 +163,12 @@ def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
             dataset_obj.close()
 
         # Guardar y liberar memoria
-        save_to_h5(current_dataset, basename, start_cut, end_cut)
+        save_to_h5(current_dataset, basename, start_cut, end_cut, dataset_obj.label_type)
         
         del current_dataset
         gc.collect()
 
-def save_to_h5(data_dict, basename, start, end):
+def save_to_h5(data_dict, basename, start, end, label_type):
     output_filename = f"{basename}_{start}-{end}.data"
     output_path = DATASETS_FOLDER / output_filename
     
@@ -175,6 +176,7 @@ def save_to_h5(data_dict, basename, start, end):
         for key, value in data_dict.items():
             dtype = np.int32 if key in ["action_blocks", "placed_blocks"] else np.float32
             f.create_dataset(key, data=np.array(value, dtype=dtype))
+        f["Y"].attrs["label_type"] = label_type
     
     print(f"Dataset guardado en: {output_path} (Tamaño {len(value)})")
 
@@ -187,5 +189,5 @@ def load_dataset(filepath, bias=False):
     print(f"Dataset {dataset.name} cargado con {len(dataset)} muestras.")
     return dataset
 
-def load_data(filepath):
-    return H5Dataset(DATA_FOLDER / filepath, lazy=False)
+def load_data(filepath, lazy=False):
+    return H5Dataset(DATA_FOLDER / filepath, lazy=lazy)

@@ -9,6 +9,7 @@ import json
 import matplotlib.pyplot as plt
 from settings import MODELS_FOLDER, HYPERPARAMS_FOLDER
 from torch.amp import GradScaler, autocast
+from misc.labels import LabelType
 
 
 class Metrics:
@@ -213,7 +214,7 @@ class ModelScorer:
         return self.model
     
     
-def train_epoch(model, train_loader, optimizer, device, scaler):
+def train_epoch(model, train_loader, optimizer, loss_function, device, scaler):
     model.train()
     total_loss = 0.0
     total_correct = 0
@@ -224,16 +225,12 @@ def train_epoch(model, train_loader, optimizer, device, scaler):
         inputs = [i.to(device, non_blocking=True) for i in inputs]
         y_batch = y_batch.to(device, non_blocking=True)
 
-        tau = 0.1
-        y_batch = torch.softmax(y_batch / tau, dim=-1)
-
         optimizer.zero_grad(set_to_none=True) # Más eficiente que zero_grad()
 
         # Autocast para precisión mixta (FP16)
         with autocast(device.type):
             logits = model(*inputs)
-            log_preds = F.log_softmax(logits, dim=-1)
-            loss = F.kl_div(log_preds, y_batch, reduction='batchmean')
+            loss = loss_function(logits, y_batch)
 
         # Escalamiento de gradientes para evitar subdesbordamiento (underflow)
         scaler.scale(loss).backward()
@@ -255,7 +252,7 @@ def train_epoch(model, train_loader, optimizer, device, scaler):
 
     return loss, accuracy
 
-def val_epoch(model: nn.Module, val_loader: DataLoader, device):
+def val_epoch(model, val_loader, loss_function, device):
     model.eval()
     total_loss = 0
     total_correct = 0
@@ -267,13 +264,8 @@ def val_epoch(model: nn.Module, val_loader: DataLoader, device):
         for batch in val_loader:
             # Desempaquetado dinámico para mayor flexibilidad
             *inputs, y_batch = [i.to(device, non_blocking=True) for i in batch]
-
-            tau = 0.1
-            y_batch = torch.softmax(y_batch / tau, dim=-1)
-
             logits = model(*inputs)
-            log_preds = F.log_softmax(logits, dim=-1)
-            loss = F.kl_div(log_preds, y_batch, reduction='batchmean')
+            loss = loss_function(logits, y_batch)
 
             # Métricas
             batch_size = y_batch.size(0)
@@ -289,7 +281,7 @@ def val_epoch(model: nn.Module, val_loader: DataLoader, device):
 
     return loss, accuracy
 
-def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, print_epoch_results, model_scorer, patience, device): 
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, device): 
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=train_set.sample_weights, 
         num_samples=len(train_set), 
@@ -323,11 +315,11 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
     best_score = float("-inf")
     
     for epoch in range(epochs):
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, scaler)
+        train_loss, train_acc = train_epoch(model, train_loader, optimizer, loss_function, device, scaler)
         train_metrics.add_epoch(train_loss, train_acc)
 
         for test_loader, val_metrics in zip(test_loaders, val_metrics_list):
-            val_loss, val_acc = val_epoch(model, test_loader, device)
+            val_loss, val_acc = val_epoch(model, test_loader, loss_function, device)
             val_metrics.add_epoch(val_loss, val_acc)
 
         print_epoch_results(epoch, train_metrics, val_metrics_list)
@@ -366,6 +358,17 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     torch.set_num_threads(os.cpu_count())
     model = model.to(device)
 
+    def kl_div_loss(logits, y):
+        tau = 0.1
+        y = torch.softmax(y / tau, dim=-1)
+        log_preds = F.log_softmax(logits, dim=-1)
+        return F.kl_div(log_preds, y, reduction='batchmean')
+    
+    if datasets[0].label_type == LabelType.BEST_ACTION.value:
+        loss_function = lambda logits, y: torch.nn.functional.cross_entropy(logits, y)
+    else:
+        loss_function = kl_div_loss
+
 
     for phase in range(1, phases+1):
         if epochs[phase-1] == 0: continue
@@ -400,7 +403,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
                 f'Val Loss: {val_wgt_loss:.4f}, Val Accuracy: {val_wgt_acc:.2f}%')
 
         print(f"ℹ️ Iniciando fase: {phase}/{phases}")
-        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, weight_decay, print_epoch_results, model_scorer, patience, device)
+        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, device)
         stats.add_phase_stats(train_metrics, val_metrics)
 
     return stats

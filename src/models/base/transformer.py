@@ -7,6 +7,7 @@ class Transformer(nn.Module, ABC):
         torch.manual_seed(42)
         super(Transformer, self).__init__()
         self.hyperparams = hyperparams
+        self.biased = False
 
     @abstractmethod
     def encode(self, block_features):
@@ -19,3 +20,8 @@ class Transformer(nn.Module, ABC):
     def forward(self, block_features, *decoder_args, **decoder_kwargs):
         memory = self.encode(block_features)
         return self.decode(memory, *decoder_args, **decoder_kwargs)
+    
+class BiasedTransformer(Transformer):
+    def __init__(self, **hyperparams):
+        super(BiasedTransformer, self).__init__(**hyperparams)
+        self.biased = True

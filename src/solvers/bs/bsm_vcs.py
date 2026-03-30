@@ -21,12 +21,16 @@ class BSM_VCS_Solver(BSM_Solver):
                 action_features_batch = torch.from_numpy(batch_data_bsm["act_feats"]).to(dtype=torch.float32)
                 placed_blocks_batch = torch.from_numpy(batch_data_bsm["pl_blocks"]).to(dtype=torch.int32)
                 placed_features_batch = torch.from_numpy(batch_data_bsm["pl_feats"]).to(dtype=torch.float32)
-                space_features_batch = torch.from_numpy(batch_data_bsm["sp_feats"]).to(dtype=torch.float32)    
+                space_features_batch = torch.from_numpy(batch_data_bsm["sp_feats"]).to(dtype=torch.float32)
+                biases_batch = torch.from_numpy(batch_data_bsm["biases"]).to(dtype=torch.float32)    
 
                 B = action_blocks_batch.shape[0]
                 curr_memory = memory.expand(B, -1, -1)
-                output = self.model.decode(curr_memory, action_blocks_batch, action_features_batch,
-                                         placed_blocks_batch, placed_features_batch, space_features_batch)
+                
+                if self.model.biased:
+                    output = self.model.decode(curr_memory, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch, biases_batch)
+                else:
+                    output = self.model.decode(curr_memory, action_blocks_batch, action_features_batch, placed_blocks_batch, placed_features_batch, space_features_batch)
                 
                 topk_values, topk_indices = output.topk(min(bsm.w, output.size(1)), dim=1)
                 selected_action_blocks_batch = [

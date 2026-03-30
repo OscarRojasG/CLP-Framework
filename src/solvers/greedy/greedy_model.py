@@ -34,8 +34,13 @@ class GreedyModelSolver(GreedySolver):
                 placed_blocks = torch.from_numpy(data["pl_blocks"]).to(dtype=torch.int32).unsqueeze(0)
                 placed_features = torch.from_numpy(data["pl_feats"]).to(dtype=torch.float32).unsqueeze(0)
                 space_features = torch.from_numpy(data["sp_feats"]).to(dtype=torch.float32).unsqueeze(0)
+                biases = torch.from_numpy(data["biases"]).to(dtype=torch.float32).unsqueeze(0)
 
-                output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
+                if self.model.biased:
+                    output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features, biases)
+                else:
+                    output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
+
                 best_index = output.argmax(dim=1).item()
                 selected_block = action_blocks[0, best_index].item()
                 

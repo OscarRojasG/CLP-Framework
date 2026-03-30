@@ -16,8 +16,9 @@ class EpochMetrics():
         self.subset_metrics[subset_name][metric_cls].append(value)
 
 class Metric(ABC):
-    def __init__(self, name):
+    def __init__(self, name, maximize=True):
         self.name = name
+        self.maximize = maximize
         self.reset()
 
     @abstractmethod
@@ -83,7 +84,7 @@ class Accuracy(Metric):
     
 class KL_Divergence(Metric):
     def __init__(self, tau):
-        super().__init__("KL Div.")
+        super().__init__("KL Div.", False)
         self.tau = tau
 
     def reset(self):
@@ -104,7 +105,7 @@ class KL_Divergence(Metric):
     
 class CrossEntropyLoss(Metric):
     def __init__(self):
-        super().__init__("CrossEntropy")
+        super().__init__("CrossEntropy", False)
 
     def reset(self):
         self.total_samples = 0

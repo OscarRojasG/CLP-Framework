@@ -187,26 +187,40 @@ class DataManager:
     
 
 class ModelScorer:
-    def __init__(self, model, score_function, print_best_score):
-        self.best_score = float("-inf")
-        self.best_model_wts = copy.deepcopy(model.state_dict())
+    def __init__(self, model, epoch_weights):
         self.model = model
-        self.score_function = score_function
-        self._print_best_score = print_best_score
-    
-    def update_best_model(self, val_metrics_list):
-        score = self.score_function(val_metrics_list)
-        if score > self.best_score:
-            #print(f"Mejor modelo actualizado: {self.best_score:2f} -> {score:2f}")
-            self.best_score = score
-            self.best_model_wts = copy.deepcopy(self.model.state_dict())
+        self.epoch_weights = epoch_weights
+        self.best_models = {}
 
-    def print_best_score(self):
-        self._print_best_score(self.best_score)
+    def update_best_models(self, epoch, val_metrics: EpochMetrics):
+        aux_dataset = list(val_metrics.subset_metrics.keys())[0]
+        for metric in val_metrics.subset_metrics[aux_dataset].keys():
+            sign = 1 if metric.maximize else -1
+            score = sign * sum([val_metrics.subset_metrics[dataset][metric][-1] * self.epoch_weights[i] / sum(self.epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
+
+            if metric in self.best_models and score < self.best_models[metric]["score"]: continue
+
+            if metric not in self.best_models:
+                self.best_models[metric] = {}
+                
+            self.best_models[metric]["score"] = score
+            self.best_models[metric]["weights"] = copy.deepcopy(self.model.state_dict())
+            self.best_models[metric]["epoch"] = epoch
+
+    def print_best_scores(self):
+        print("Mejores modelos por métrica:")
+        for metric in self.best_models:
+            sign = 1 if metric.maximize else -1
+            print(f"    {metric.name}: {metric.format(sign * self.best_models[metric]['score'])} (Epoch {self.best_models[metric]['epoch']})")
         
-    def get_best_model(self):
-        self.model.load_state_dict(self.best_model_wts)
-        return self.model
+    def get_best_weights(self):
+        return {metric.name: self.best_models[metric]["weights"] for metric in self.best_models}
+    
+    def get_best_weights_by_metric(self, metric):
+        return self.best_models[metric]["weights"]
+    
+    def get_last_update_epoch(self, metric):
+        return self.best_models[metric]["epoch"]
     
     
 def train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler):
@@ -223,7 +237,7 @@ def train_epoch(model, train_loader, optimizer, loss_function, metrics, device, 
         with autocast(device.type):
             logits = model(*inputs)
             loss = loss_function.step(logits, y_batch)
-            for metric in metrics: metric.step(y_batch, logits)
+            for metric in metrics: metric.step(logits, y_batch)
 
         # Escalamiento de gradientes para evitar subdesbordamiento (underflow)
         scaler.scale(loss).backward()
@@ -246,14 +260,14 @@ def val_epoch(model, val_loader, loss_function, metrics, device):
             *inputs, y_batch = [i.to(device, non_blocking=True) for i in batch]
             logits = model(*inputs)
             loss = loss_function.step(logits, y_batch)
-            for metric in metrics: metric.step(y_batch, logits)
+            for metric in metrics: metric.step(logits, y_batch)
 
     loss = loss_function.compute()
     values = [metric.compute() for metric in metrics]
 
     return loss, values
 
-def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device): 
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer: ModelScorer, patience, metrics, device): 
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=train_set.sample_weights, 
         num_samples=len(train_set), 
@@ -281,13 +295,10 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     train_metrics = Metrics()
 
-    epochs_without_improvement = 0
-    best_score = float("-inf")
-
     train_metrics = EpochMetrics()
     val_metrics = EpochMetrics()
     
-    for epoch in range(epochs):
+    for epoch in range(1, epochs+1):
         loss, values = train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler)
         train_metrics.add_value("train", loss_function, loss)
         for i, value in enumerate(values):
@@ -300,30 +311,21 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
             val_metrics.add_value(test_loader.dataset.name, loss_function, loss)
 
         print_epoch_results(epoch, train_metrics, val_metrics)
-        model_scorer.update_best_model(val_metrics)
-        
-        if best_score == model_scorer.best_score:
-            epochs_without_improvement += 1
-        else:
-            best_score = model_scorer.best_score
-            epochs_without_improvement = 0
+        model_scorer.update_best_models(epoch, val_metrics)
 
-        if epochs_without_improvement > patience:
+        if epoch - model_scorer.get_last_update_epoch(loss_function) > patience:
             break
 
-    # Al terminar todas las fases, restauramos el mejor modelo
-    model = model_scorer.get_best_model()
-    model_scorer.print_best_score()
+    # Al terminar todas las fases, restauramos los mejores modelos
+    weights = model_scorer.get_best_weights()
+    model_scorer.print_best_scores()
 
-    return model, train_metrics, val_metrics
+    return weights, train_metrics, val_metrics
 
 def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, weight_decay, patience, metrics, seed=42):
     data_manager = DataManager(datasets, train_size, train_weights, test_size, test_weights, seed)
     #stats = TrainingStats()
     phases = len(datasets)
-    
-    def print_best_score(best_score):
-        print(f"✅ Mejor loss obtenido: {-best_score:.4f}\n")
 
     ### CONFIG
     device = torch.device("cuda" if torch.cuda.is_available() 
@@ -347,14 +349,11 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
 
         samples_per_set = [len(test_set) for test_set in test_sets]
         epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
-
-        def score_function(val_metrics):
-            return -sum([val_metrics.subset_metrics[dataset][loss_function][-1] * epoch_weights[i] / sum(epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
         
-        model_scorer = ModelScorer(model, score_function, print_best_score)
+        model_scorer = ModelScorer(model, epoch_weights)
 
         def print_epoch_results(epoch, train_metrics, val_metrics):
-            print(f'{'\n' if epoch == 0 else ''}Epoch {epoch + 1}/{epochs[phase-1]}')
+            print(f'{'\n' if epoch == 1 else ''}Epoch {epoch}/{epochs[phase-1]}')
             val_epoch_loss = sum([val_metrics.subset_metrics[dataset][loss_function][-1] * epoch_weights[i] / sum(epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
             train_epoch_loss = train_metrics.subset_metrics["train"][loss_function][-1]
             print(f"    Average - Train Loss: {loss_function.format(train_epoch_loss)} | Val Loss: {loss_function.format(val_epoch_loss)}", end='')
@@ -375,19 +374,22 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
                         print(f'{' | ' if j > 0 else ''}{metric.name}: {metric.format(val_epoch_metric)}', end='')
                 print()
 
-        print(f"ℹ️ Iniciando fase: {phase}/{phases}")
-        model, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate[phase-1], weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device)
+        print(f"{'\n' if phase > 1 else ''}ℹ️ Iniciando fase: {phase}/{phases}")
+        best_weights, train_metrics, val_metrics = _train(model, epochs[phase-1], train_set, test_sets, batch_size, learning_rate[phase-1], weight_decay, loss_function, print_epoch_results, model_scorer, patience, metrics, device)
+        weights = model_scorer.get_best_weights_by_metric(loss_function)
+        model.load_state_dict(weights)
+
         #stats.add_phase_stats(train_metrics, val_metrics)
 
-    #return stats
+    return best_weights
 
-def save_model(model, model_name):
+def save_model(model, weights, model_name):
     os.makedirs(HYPERPARAMS_FOLDER, exist_ok=True)
     with open(str(HYPERPARAMS_FOLDER / model_name) + ".json", 'w') as f:
         json.dump(model.hyperparams, f, indent=4)
 
     os.makedirs(MODELS_FOLDER, exist_ok=True)
-    torch.save(model.state_dict(), str(MODELS_FOLDER / model_name) + ".pth")
+    torch.save(weights, str(MODELS_FOLDER / model_name) + ".pth")
     print(f"✅ Modelo guardado en {MODELS_FOLDER / model_name}.pth")
 
 def load_hyperparams(model_name):

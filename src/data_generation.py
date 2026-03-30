@@ -70,7 +70,6 @@ def read_output(filepath: str):
     placed_features_all = []
     space_features_all = []
     selected_blocks_all = []
-    greedy_evals_all = []
     vcs_evals_all = []
     
     with open(filepath, "r") as f:
@@ -91,22 +90,18 @@ def read_output(filepath: str):
             i += 1
             action_blocks = []
             action_features = []
-            greedy_evals = []
             vcs_evals = []
             while i < n and lines[i] != "Placed":
                 parts = lines[i].split()
                 act_block = int(parts[0])
-                act_feat = list(map(float, parts[3:]))
-                gr_eval = float(parts[1])
-                vcs_eval = float(parts[2])
+                act_feat = list(map(float, parts[2:]))
+                vcs_eval = float(parts[1])
                 action_blocks.append(act_block)
                 action_features.append(act_feat)
-                greedy_evals.append(gr_eval)
                 vcs_evals.append(vcs_eval)
                 i += 1
             action_blocks_all.append(action_blocks)
             action_features_all.append(action_features)
-            greedy_evals_all.append(greedy_evals)
             vcs_evals_all.append(vcs_evals)
 
         if lines[i] == "Placed":
@@ -135,11 +130,11 @@ def read_output(filepath: str):
             
         i += 1
         
-    return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, greedy_evals_all, vcs_evals_all
+    return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, vcs_evals_all
 
 
 def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST_ACTION, padding_blocks=10000, padding_placed=64):
-    block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, greedy_evals_all, _ = read_output(filename)
+    block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, vcs_evals_all = read_output(filename)
     num_states = len(action_features_all)
     
     # Padding bloques
@@ -164,26 +159,13 @@ def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST
         # Etiqueta
         Y = np.zeros(min_actions, dtype=float)
 
-        if label_type == LabelType.RANKING:
-            Y = np.zeros(min_actions, dtype=float)
-            sorted_evals = sorted(greedy_evals_all[i], reverse=True)
-            ranking_dict = {}
-            for j, greedy_eval in enumerate(sorted_evals):
-                if greedy_eval not in ranking_dict:
-                        ranking_dict[greedy_eval] = j + 1
-
-            for j, greedy_eval in enumerate(greedy_evals_all[i]):
-                Y[j] = ranking_dict[greedy_eval]
-
-            Y = 1.0 / Y
-        else:
-            selected_block = selected_blocks_all[i]
-            action_blocks = action_blocks_all[i]
-            
-            for j, action_block in enumerate(action_blocks):
-                if action_block == selected_block:
-                    Y[j] = 1
-                    break
+        selected_block = selected_blocks_all[i]
+        action_blocks = action_blocks_all[i]
+        
+        for j, action_block in enumerate(action_blocks):
+            if action_block == selected_block:
+                Y[j] = 1
+                break
             
         # Padding bloques colocados
         placed_blocks = np.array(placed_blocks_all[i], dtype=int)

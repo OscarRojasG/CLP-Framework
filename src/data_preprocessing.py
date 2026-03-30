@@ -8,6 +8,7 @@ from collections import defaultdict
 from torch.utils.data import Dataset
 from settings import DATASETS_FOLDER, DATA_FOLDER
 import settings
+from misc.labels import LabelType
 
 
 class H5Dataset(Dataset):
@@ -18,7 +19,7 @@ class H5Dataset(Dataset):
         
         with h5py.File(self.file_path, "r") as f:
             self.dataset_len = len(f["Y"])
-            self.label_type = f["Y"].attrs["label_type"]
+            self.label_type = f["Y"].attrs["label_type"] if "label_type" in f["Y"].attrs else LabelType.BEST_ACTION
         
         if not lazy:
             self._open_file()
@@ -91,7 +92,7 @@ class DatasetWithBias(H5Dataset):
         # 5. Manejo de Padding: Si action_blocks era -1, el bias debe ser -inf o 0 
         # para que no influya. log_softmax se encargará del resto en el modelo.
         mask = (action_blocks == -1)
-        bias[mask] = -np.inf # O un valor muy bajo
+        bias[mask] = -1 # O un valor muy bajo
 
         # Retornamos todo el pack original + el nuevo bias
         return (*data[:-1], bias, y)

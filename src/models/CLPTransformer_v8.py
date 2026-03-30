@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from models.base.attention import CrossAttentionBlock
-from models.base.transformer import Transformer
+from models.base.transformer import BiasedTransformer
 
 class AggregationLayer(nn.Module):
     def __init__(self, d_model, dropout):
@@ -48,7 +48,7 @@ class MLPEncoder(nn.Module):
         # Conexión residual + Normalización
         return self.norm(x + self.ffn(x))
 
-class CLPTransformer(Transformer):
+class CLPTransformer(BiasedTransformer):
     def __init__(self, block_dim, action_dim, placed_dim, space_dim, d_model=256, nhead=8, num_layers=3, ff_dim_multiplier=4, dropout=0.1):
         super().__init__(
             block_dim=block_dim,

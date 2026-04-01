@@ -1,6 +1,6 @@
 from pathlib import Path
 
-PROJECT_ROOT = Path.cwd().parent
+PROJECT_ROOT = Path(__file__).parent.parent
 INSTANCE_FOLDER = PROJECT_ROOT / "instances"
 OUTPUT_FOLDER = PROJECT_ROOT / "outputs"
 DATA_FOLDER = PROJECT_ROOT / "data"
@@ -10,4 +10,3 @@ HYPERPARAMS_FOLDER = MODELS_FOLDER / "hyperparams"
 
 BSG_SOLVER_PATH = PROJECT_ROOT / "BSG_CLP"
 VCS_SOLVER_PATH = PROJECT_ROOT / "VCS"
-BSM_ENV_PATH = PROJECT_ROOT / "clp_engine.cpython-313-x86_64-linux-gnu.so"

@@ -1,22 +1,15 @@
-from solvers.bs.bs_solver import BS_Solver
-import pandas as pd
-import time
+from solvers.evaluators.utils import print_progress_table, stats_to_df
 
-def bs_eval(solver_list: list[BS_Solver], instance_file: str, num_instances: int, w: int, min_fr: float):
-    eval_dict = {
-        'instance': [i for i in range(num_instances)],
-    }
-    
-    for solver in solver_list:
-        vols = []
-        times = []
-        
-        for i in range(num_instances):
+def bs_eval(solver_list, instance_file, num_instances, w, min_fr):
+    solver_stats = {s.name: {'Vol': [], 'Time': []} for s in solver_list}
+    instances = list(range(num_instances))
+
+    for i in instances:
+        for solver in solver_list:
             vol, time = solver.solve(instance_file, i, w, min_fr)
-            vols.append(vol)
-            times.append(time)
+            solver_stats[solver.name]['Vol'].append(vol)
+            solver_stats[solver.name]['Time'].append(time)
             
-        eval_dict['Vol ' + solver.name] = vols
-        eval_dict['Time ' + solver.name] = times
+        print_progress_table(i + 1, solver_stats)
         
-    return pd.DataFrame(eval_dict)
+    return stats_to_df(solver_stats, instances)

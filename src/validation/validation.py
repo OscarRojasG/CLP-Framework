@@ -8,6 +8,7 @@ from models.base.transformer import Transformer
 from data_preprocessing import load_data
 from torch.utils.data import DataLoader
 import torch
+from IPython.display import display
 
 def get_vcs_ranking_frequencies(filename: str):
     data = load_data(filename)
@@ -134,3 +135,25 @@ def get_frequency_dataframe(counter):
     ]]
 
     return df
+
+def calculate_mrr_from_frequencies(arr_counter):
+    total_samples = sum(arr_counter)
+    cumulative_reciprocal_sum = 0.0
+
+    for i, count in enumerate(arr_counter):
+        rank = i + 1  # La posición real (1, 2, 3...)
+        cumulative_reciprocal_sum += (1.0 / rank) * count
+
+    mrr = cumulative_reciprocal_sum / total_samples
+    return mrr
+
+def results_summary(counter):
+    df = get_frequency_dataframe(counter)
+    df = df[(df["Posición"] == 1) | (df["Posición"] == 8)]
+    df = df[["Posición", "Frecuencia acumulada (%)"]]
+    mrr = calculate_mrr_from_frequencies(counter)
+    hmr = mrr ** -1
+    display(round(df, 2))
+    print("MRR:", f'{mrr:.3f}')
+    print("HMR:", f'{hmr:.3f}')
+    print("N:", sum(counter))

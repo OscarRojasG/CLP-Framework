@@ -124,12 +124,14 @@ class DataManager:
         self.test_weights = test_weights
         
         self.generator = torch.Generator().manual_seed(seed)
+        proportion = test_size / (train_size + test_size)
         
         self.split_datasets = []
         for i, dataset in enumerate(datasets):
+            min_size = int(len(dataset) * proportion)
             val_part, train_part = random_split(
                 dataset, 
-                [test_size, len(dataset) - test_size],
+                [min_size, len(dataset) - min_size],
                 generator=self.generator
             )
             

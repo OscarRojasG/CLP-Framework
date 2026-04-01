@@ -1,18 +1,14 @@
-from solvers.timed.timed_solver import Timed_Solver
-import pandas as pd
+from solvers.evaluators.utils import print_progress_table, stats_to_df
 
-def timed_eval(solver_list: list[Timed_Solver], instance_file: str, num_instances: int, min_fr: float, time: float, start: int = 0):
-    eval_dict = {
-        'instance': [i for i in range(start, start + num_instances)],
-    }
-    
-    for solver in solver_list:
-        vols = []
+def timed_eval(solver_list, instance_file, num_instances, min_fr, limit_time, start=0):
+    solver_stats = {s.name: {'Vol': []} for s in solver_list}
+    instances = list(range(start, start + num_instances))
+
+    for idx, i in enumerate(instances):
+        for solver in solver_list:
+            vol = solver.solve(instance_file, i, min_fr, limit_time)
+            solver_stats[solver.name]['Vol'].append(vol)
         
-        for i in range(start, start + num_instances):
-            vol = solver.solve(instance_file, i, min_fr, time)
-            vols.append(vol)
-            
-        eval_dict[solver.name] = vols
+        print_progress_table(idx + 1, solver_stats)
         
-    return pd.DataFrame(eval_dict)
+    return stats_to_df(solver_stats, instances)

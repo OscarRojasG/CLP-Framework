@@ -7,7 +7,7 @@ from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PAT
 from misc.labels import LabelType
 
 
-def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
+def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, double_effort):
     """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Asegurarse de que la carpeta de salida exista
@@ -16,6 +16,9 @@ def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
         dest_dir = os.path.join(OUTPUT_FOLDER, base_folder)
     else:
         dest_dir = OUTPUT_FOLDER
+
+    if not num_actions:
+        num_actions = w * w
 
     os.makedirs(dest_dir, exist_ok=True)
 
@@ -27,29 +30,44 @@ def run_instance(instance_filename, i, w, base_folder=None, min_fr=1):
 
     # Ejecutar el proceso y capturar la salida
     with open(output_file_path, 'w') as f:
+        cmd = [
+            BSG_SOLVER_PATH, 
+            os.path.join(INSTANCE_FOLDER, instance_filename), 
+            "-i", str(i), 
+            "-w", str(w), 
+            f"--min_fr={min_fr}", 
+            f"--verbose2={num_actions}"
+        ]
+
+        if double_effort:
+            cmd.append("--de")
+
         subprocess.run(
-            [BSG_SOLVER_PATH, os.path.join(INSTANCE_FOLDER, instance_filename), "-i", str(i), "-w", str(w), f"--min_fr={min_fr}", f"--verbose2={str(w*w)}"],
+            cmd,
             stdout=f,
             stderr=subprocess.DEVNULL,
             check=True,
             text=True
         )
 
-
-def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1):
+def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1, num_actions=None, double_effort=True, base_folder=None):
     # Leer número de instancias
     with open(INSTANCE_FOLDER / instance_filename, "r") as f:
         num_instances = int(f.readline().strip())
 
     # Preparar el nombre de la carpeta base para pasar a run_instance (si se desea agrupar salidas)
-    base_folder = os.path.splitext(os.path.basename(instance_filename))[0]
+    if not base_folder:
+        base_folder = os.path.splitext(os.path.basename(instance_filename))[0]
     # Nos aseguramos de que la carpeta output principal exista (las subcarpetas se crearán en run_instance)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    if not num_actions:
+        num_actions = w * w
 
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr) 
+            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr, num_actions, double_effort) 
             for i in range(num_instances)
         ]
             
@@ -132,8 +150,7 @@ def read_output(filepath: str):
         
     return block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, vcs_evals_all
 
-
-def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST_ACTION, padding_blocks=10000, padding_placed=64):
+def generate_train_data(filename: str, min_actions=64, padding_blocks=10000, padding_placed=64):
     block_features, action_blocks_all, action_features_all, placed_blocks_all, placed_features_all, space_features_all, selected_blocks_all, vcs_evals_all = read_output(filename)
     num_states = len(action_features_all)
     
@@ -153,19 +170,25 @@ def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST
     np_Y = []
     
     for i in range(num_states):
+        # Truncar acciones
         if len(action_features_all[i]) < min_actions:
             continue
         
         # Etiqueta
         Y = np.zeros(min_actions, dtype=float)
 
-        selected_block = selected_blocks_all[i]
-        action_blocks = action_blocks_all[i]
-        
-        for j, action_block in enumerate(action_blocks):
-            if action_block == selected_block:
+        action_blocks_all[i] = action_blocks_all[i][:min_actions]
+        action_features_all[i] = action_features_all[i][:min_actions]
+
+        found = False    
+        for j, action_block in enumerate(action_blocks_all[i]):
+            if action_block == selected_blocks_all[i]:
                 Y[j] = 1
+                found = True
                 break
+
+        if not found:
+            continue
             
         # Padding bloques colocados
         placed_blocks = np.array(placed_blocks_all[i], dtype=int)
@@ -197,8 +220,7 @@ def generate_train_data(filename: str, min_actions=64, label_type=LabelType.BEST
         np.array(np_Y, dtype=np.float32),
     )
 
-
-def generate_data_from_folder(folder_path, label_type=LabelType.BEST_ACTION, filename=None):
+def generate_data_from_folder(folder_path, output_filename=None, label_type=LabelType.BEST_ACTION, min_actions=64):
     block_features_all, action_features_all, placed_features_all, action_blocks_all, placed_blocks_all, space_features_all, Y_all = [], [], [], [], [], [], []
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
@@ -208,7 +230,7 @@ def generate_data_from_folder(folder_path, label_type=LabelType.BEST_ACTION, fil
 
         if os.path.isfile(file_path):  # Solo procesar archivos (no directorios)
             # Generar los datos de entrenamiento
-            block_features, action_blocks, action_features, placed_blocks, placed_features, space_features, Y = generate_train_data(file_path)
+            block_features, action_blocks, action_features, placed_blocks, placed_features, space_features, Y = generate_train_data(file_path, min_actions)
 
             # Agregar los datos del archivo actual a las listas generales
             block_features_all.extend(block_features)
@@ -220,10 +242,11 @@ def generate_data_from_folder(folder_path, label_type=LabelType.BEST_ACTION, fil
             Y_all.extend(Y)
 
     # Definir el nombre del archivo de salida basado en el nombre de la carpeta
-    if filename == None:
+    if output_filename is None:
         folder_name = os.path.basename(folder_path)
-        filename = folder_name.split('.')[0] + ".data"
-    output_path = DATA_FOLDER / filename
+        output_filename = folder_name.split('.')[0]
+
+    output_path = DATA_FOLDER / (output_filename + ".data")
 
     # Guardar los datos
     with h5py.File(output_path, "w") as f:

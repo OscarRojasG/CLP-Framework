@@ -16,6 +16,6 @@ class Timed_BSG_Solver(Timed_Solver):
             text=True
         )
 
-        line = proc.stdout.strip().splitlines()[-1]
+        line = proc.stdout.strip().splitlines()[-3]
         volume = float(line)
         return volume

@@ -123,3 +123,28 @@ class CrossEntropyLoss(Metric):
     
     def format(self, value):
         return f"{value:.4f}"
+
+class MeanReciprocalRank(Metric):
+    def __init__(self):
+        super().__init__("MRR")
+
+    def reset(self):
+        self.reciprocal_ranks = []
+
+    def step(self, logits, y):
+        labels = y.argmax(dim=-1) 
+        _, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+        matched_positions = (sorted_indices == labels.unsqueeze(1)).nonzero()[:, 1]
+        ranks = matched_positions + 1
+        reciprocals = 1.0 / ranks.to(torch.float)     
+        self.reciprocal_ranks.extend(reciprocals.cpu().tolist())
+
+    def _compute(self):
+        if not self.reciprocal_ranks:
+            return 0.0
+        
+        all_reciprocals_tensor = torch.tensor(self.reciprocal_ranks, dtype=torch.float)
+        return all_reciprocals_tensor.mean().item()
+    
+    def format(self, value):
+        return f"{value:.3f}"

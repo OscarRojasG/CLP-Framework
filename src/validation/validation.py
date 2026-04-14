@@ -26,7 +26,7 @@ def get_vcs_ranking_frequencies(filename: str):
         return []
 
     max_pos = max(counter.keys())
-    arr_counter = [counter.get(i, 0) for i in range(1, max_pos + 1)]
+    arr_counter = [counter.get(i, 0) for i in range(max_pos + 1)]
 
     return arr_counter
 
@@ -50,7 +50,7 @@ def get_model_ranking_frequencies(model: Transformer, filename: str):
         
         # Ver en qué posición del ranking del modelo quedó esa acción experta
         # Buscamos el índice original dentro del ranking ordenado por el modelo
-        pos_in_model = np.where(model_sorted_indices == best_action_idx)[0][0] + 1
+        pos_in_model = np.where(model_sorted_indices == best_action_idx)[0][0]
         
         # Guardar en el diccionario
         counter[pos_in_model] = counter.get(pos_in_model, 0) + 1
@@ -60,7 +60,7 @@ def get_model_ranking_frequencies(model: Transformer, filename: str):
         return []
 
     max_pos = max(counter.keys())
-    arr_counter = [counter.get(i, 0) for i in range(1, max_pos + 1)]
+    arr_counter = [counter.get(i, 0) for i in range(max_pos + 1)]
 
     return arr_counter
 
@@ -149,7 +149,7 @@ def calculate_mrr_from_frequencies(arr_counter):
 
 def results_summary(counter):
     df = get_frequency_dataframe(counter)
-    df = df[(df["Posición"] == 1) | (df["Posición"] == 8)]
+    df = df[(df["Posición"] == 1) | (df["Posición"] == 8) | (df["Posición"] == 16)]
     df = df[["Posición", "Frecuencia acumulada (%)"]]
     mrr = calculate_mrr_from_frequencies(counter)
     hmr = mrr ** -1

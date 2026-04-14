@@ -348,10 +348,8 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
         if epochs[phase-1] == 0: continue
         test_sets = data_manager.get_val_subsets(phase)
         train_set = data_manager.get_train_subset(phase)
-
-        samples_per_set = [len(test_set) for test_set in test_sets]
-        epoch_weights = [samples / sum(samples_per_set) for samples in samples_per_set]
         
+        epoch_weights = test_weights[:phase]
         model_scorer = ModelScorer(model, epoch_weights)
 
         def print_epoch_results(epoch, train_metrics, val_metrics):

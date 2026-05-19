@@ -149,3 +149,121 @@ class MeanReciprocalRank(Metric):
     
     def format(self, value):
         return f"{value:.3f}"
+    
+class MSE(Metric):
+    def __init__(self):
+        super().__init__("MSE", False)
+
+    def reset(self):
+        self.total_samples = 0
+        self.total_mse = 0
+    
+    def step(self, logits, y):
+        mse = torch.nn.functional.mse_loss(logits, y.float())
+        
+        batch_size = y.size(0)
+        self.total_mse += mse.item() * batch_size
+        self.total_samples += batch_size
+        
+        return mse
+
+    def _compute(self):
+        if self.total_samples == 0: return 0.0
+        return self.total_mse / self.total_samples
+    
+    def format(self, value):
+        return f"{value:.4f}"
+    
+class ExpMSE(Metric):
+    def __init__(self):
+        super().__init__("ExpMSE", False)
+
+    def reset(self):
+        self.total_samples = 0
+        self.total_mse_real = 0
+    
+    def step(self, logits, y_log):
+        """
+        logits: Salida del modelo (en escala logarítmica)
+        y_log: Target original (en escala logarítmica)
+        """
+        # 1. Revertimos la transformación log para ambos
+        preds_real = torch.exp(logits)
+        targets_real = torch.exp(y_log)
+        
+        # 2. Calculamos el MSE en la escala original de pasos/desperdicio
+        mse_real = torch.nn.functional.mse_loss(preds_real, targets_real.float())
+        
+        # 3. Acumulamos usando el batch size
+        batch_size = y_log.size(0)
+        self.total_mse_real += mse_real.item() * batch_size
+        self.total_samples += batch_size
+        
+        return mse_real
+
+    def _compute(self):
+        if self.total_samples == 0: 
+            return 0.0
+        return self.total_mse_real / self.total_samples
+    
+    def format(self, value):
+        return f"{value:.4f}"
+    
+class MAE(Metric):
+    def __init__(self):
+        super().__init__("MAE", False)
+
+    def reset(self):
+        self.total_samples = 0
+        self.total_mse = 0
+    
+    def step(self, logits, y):
+        mse = torch.nn.functional.l1_loss(logits, y.float())
+        
+        batch_size = y.size(0)
+        self.total_mse += mse.item() * batch_size
+        self.total_samples += batch_size
+        
+        return mse
+
+    def _compute(self):
+        if self.total_samples == 0: return 0.0
+        return self.total_mse / self.total_samples
+    
+    def format(self, value):
+        return f"{value:.4f}"
+    
+class ExpMAE(Metric):
+    def __init__(self):
+        super().__init__("ExpMAE", False)
+
+    def reset(self):
+        self.total_samples = 0
+        self.total_mse_real = 0
+    
+    def step(self, logits, y_log):
+        """
+        logits: Salida del modelo (en escala logarítmica)
+        y_log: Target original (en escala logarítmica)
+        """
+        # 1. Revertimos la transformación log para ambos
+        preds_real = torch.exp(logits)
+        targets_real = torch.exp(y_log)
+        
+        # 2. Calculamos el MSE en la escala original de pasos/desperdicio
+        mse_real = torch.nn.functional.l1_loss(preds_real, targets_real.float())
+        
+        # 3. Acumulamos usando el batch size
+        batch_size = y_log.size(0)
+        self.total_mse_real += mse_real.item() * batch_size
+        self.total_samples += batch_size
+        
+        return mse_real
+
+    def _compute(self):
+        if self.total_samples == 0: 
+            return 0.0
+        return self.total_mse_real / self.total_samples
+    
+    def format(self, value):
+        return f"{value:.4f}"

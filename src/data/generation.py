@@ -53,6 +53,10 @@ def read_output(filepath: str):
             next(it)
             selected_block = int(next(it))
 
+            # --- Volumen actual ---
+            next(it)
+            volume = float(next(it))
+
             # --- Dato final (Greedy) ---
             next(it)
             greedy = float(next(it))
@@ -118,7 +122,7 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
     return local_inputs, local_outputs, local_ranks
 
 
-def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions):
+def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, prefix=None):
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
     # 1. Obtener y ordenar la lista de archivos para asegurar determinismo
@@ -158,7 +162,9 @@ def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions
 
     input_data = input_adapter.get()
     output_data = output_adapter.get()
-    save_data(input_data, output_data, ranks, folder + ".data")
+
+    output_name = f"{prefix}_{folder}.data" if prefix else f"{folder}.data"
+    save_data(input_data, output_data, ranks, output_name)
 
 
 def save_data(input_data, output_data, ranks, output_name):

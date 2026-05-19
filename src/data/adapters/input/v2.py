@@ -11,13 +11,8 @@ class InputAdapterV2(InputAdapter):
             "placed_blocks": np.int32,
             "placed_features": np.float32,
             "space_features": np.float32,
-        }, max_blocks, max_pblocks, max_actions)
-
-    def input_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
-        enc_data = self.enc_2_vec(blocks)
-        dec_data = self.dec_2_vec(space, pblocks, actions)
-
-        return (*enc_data, *dec_data)
+        }, max_blocks, max_pblocks)
+        self.max_actions = max_actions
     
     def enc_2_vec(self, blocks: list[Block]):
         block_features = np.full((self.max_blocks, 8), -1, dtype=np.float32)

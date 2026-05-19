@@ -3,46 +3,49 @@ from bsm_engine import GreedyModel
 from solvers.greedy.greedy_solver import GreedySolver
 from settings import INSTANCE_FOLDER
 import os
+from data.objects import *
 
 
 class GreedyModelSolver(GreedySolver): 
-    def __init__(self, model, w):
+    def __init__(self, model, w, input_adapter, min_fr):
         super().__init__("GreedyModel")
         self.model = model
         self.w = w
-        pass
-     
-    def solve(self, instance_file, instance_number, min_fr):
+        self.input_adapter = input_adapter
+        self.min_fr = min_fr
+
+    def solve(self, instance_file, instance_number):
         instance_file = str(INSTANCE_FOLDER / instance_file) 
         
         if os.path.exists(instance_file) == False:
             raise Exception(f'El archivo de instancia {instance_file} no existe.')
         
-        env = GreedyModel(instance_file, instance_number, self.w, min_fr)
+        env = GreedyModel(instance_file, instance_number, self.w, self.min_fr)
         
-        raw_bl_feats = env.get_block_features()
-        block_features = torch.from_numpy(raw_bl_feats).unsqueeze(0)
+        block_data = env.get_block_data()
+        block_data = [Block(block_data[i:i+4]) for i in range(0, len(block_data), 4)]
+
+        enc_data = self.input_adapter.enc_2_vec(block_data)
+        enc_data = tuple(torch.from_numpy(data).unsqueeze(0) for data in enc_data)
         
         with torch.no_grad():
-            memory = self.model.encode(block_features)
+            enc_data = self.model.encode(*enc_data)
 
             while not env.is_finished():
-                data = env.get_dict()
-                
-                action_blocks = torch.from_numpy(data["act_blocks"]).to(dtype=torch.int32).unsqueeze(0)
-                action_features = torch.from_numpy(data["act_feats"]).to(dtype=torch.float32).unsqueeze(0)
-                placed_blocks = torch.from_numpy(data["pl_blocks"]).to(dtype=torch.int32).unsqueeze(0)
-                placed_features = torch.from_numpy(data["pl_feats"]).to(dtype=torch.float32).unsqueeze(0)
-                space_features = torch.from_numpy(data["sp_feats"]).to(dtype=torch.float32).unsqueeze(0)
-                biases = torch.from_numpy(data["biases"]).to(dtype=torch.float32).unsqueeze(0)
+                space_data = Space(env.get_space_data())
+                pblock_data = env.get_pblock_data()
+                action_data = env.get_action_data()
 
-                if self.model.biased:
-                    output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features, biases)
-                else:
-                    output = self.model.decode(memory, action_blocks, action_features, placed_blocks, placed_features, space_features)
+                pblock_data = [PBlock(pblock_data[i:i+4]) for i in range(0, len(pblock_data), 4)]
+                action_data = [Action(action_data[i:i+4]) for i in range(0, len(action_data), 4)]
+
+                dec_data = self.input_adapter.dec_2_vec(block_data, space_data, pblock_data, action_data)
+                dec_data = tuple(torch.from_numpy(data).unsqueeze(0) for data in dec_data)
+
+                output = self.model.decode(*enc_data, *dec_data)
 
                 best_index = output.argmax(dim=1).item()
-                selected_block = action_blocks[0, best_index].item()
+                selected_block = action_data[best_index].block_id
                 
                 env.transition(selected_block)
 

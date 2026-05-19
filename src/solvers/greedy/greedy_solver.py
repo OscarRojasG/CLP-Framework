@@ -1,9 +1,5 @@
-from abc import ABC, abstractmethod
+from solvers.solver import Solver
 
-class GreedySolver(ABC):
+class GreedySolver(Solver):
     def __init__(self, name):
-        self.name = name
-        
-    @abstractmethod
-    def solve(self, instance_file, instance_number, min_fr):
-        pass
+        super().__init__(name)

@@ -112,6 +112,7 @@ class CrossEntropyLoss(Metric):
         self.total_ce = 0
     
     def step(self, logits, y):
+        y = y / y.sum(dim=1, keepdim=True)
         ce = torch.nn.functional.cross_entropy(logits, y)
         batch_size = y.size(0)
         self.total_ce += ce.item() * batch_size 

@@ -223,6 +223,8 @@ outputs/**
 stats/**
 experiments/*.csv
 
+notebooks/testing
+
 !instances/benchmarks/
 !instances/benchmarks/**
 !src/*.so

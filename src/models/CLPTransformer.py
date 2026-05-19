@@ -48,7 +48,7 @@ class CLPTransformer(Transformer):
         x = self.block_proj(block_features) # [B, N, d_model]
         x = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
 
-        return x
+        return (x, )
 
     def decode(self, memory, action_blocks, action_features, placed_blocks, placed_features, space_features):
         B = memory.shape[0]

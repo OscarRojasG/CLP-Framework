@@ -1,5 +1,5 @@
 from settings import OUTPUT_FOLDER
-from data_generation import read_output
+from data.generation import read_output
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -104,8 +104,7 @@ def plot_ranking_frequencies(counters_dict):
 
     # Configuración de estilo
     plt.xlabel("Top-K", fontsize=12)
-    plt.ylabel("Frecuencia Acumulada (%)", fontsize=12)
-    plt.title("Comparación de Calidad de Ranking: Heurística vs. Modelo", fontsize=14, pad=15)
+    plt.ylabel("Accuracy (%)", fontsize=12)
     
     # Límites y rejilla
     plt.ylim(0, 105)
@@ -116,6 +115,60 @@ def plot_ranking_frequencies(counters_dict):
     plt.legend(loc="lower right", frameon=True, shadow=True)
     
     plt.tight_layout()
+    plt.show()
+
+def plot_single_ranking_accuracy(counter, label="Modelo"):
+    """
+    Grafica la precisión acumulada (Top-K Accuracy) para un contador único
+    con anotaciones específicas en K=1 y K=16.
+    """
+    plt.figure(figsize=(10, 6), dpi=100)
+    
+    # 1. Preparar datos
+    positions = np.arange(1, len(counter) + 1)
+    cum_freq = np.cumsum(counter)
+    total = cum_freq[-1]
+    cum_percent = (cum_freq / total) * 100
+
+    # 2. Graficar curva principal
+    plt.plot(positions, cum_percent, label=f"{label}", 
+             linewidth=2.5, color='#1f77b4', marker='o', 
+             markersize=4, markevery=[0, 15]) # Marcadores solo en 1 y 16
+
+    # 3. Anotaciones para K=1 y K=16
+    for k_val in [1, 16]:
+        idx = k_val - 1
+        val = cum_percent[idx]
+        
+        # Dibujar punto destacado
+        plt.scatter(k_val, val, color='red', zorder=5)
+        
+        # Añadir etiqueta con flecha (anotación)
+        plt.annotate(
+            f'Top-{k_val}: {val:.1f}%',
+            xy=(k_val, val),
+            xytext=(k_val + 4, val - 8),
+            fontsize=10,
+            fontweight='bold',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#1f77b4", alpha=0.8),
+            arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.2", color='black')
+        )
+
+    # Configuración de estilo
+    plt.xlabel("Top-K (Posición)", fontsize=12)
+    plt.ylabel("Accuracy (%)", fontsize=12)
+    
+    # Límites y rejilla
+    plt.ylim(0, 105)
+    plt.xlim(0, len(counter) + 5)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    
+    # Líneas de referencia opcionales para los ejes en K=1 y K=16
+    for k in [1, 16]:
+        plt.axvline(x=k, color='red', linestyle=':', alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig('fig.png')
     plt.show()
 
 def get_frequency_dataframe(counter):

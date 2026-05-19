@@ -1,16 +1,13 @@
-from torch import nn
 from torch.utils.data import Dataset, random_split, DataLoader, Subset
-import torch.nn.functional as F
 import torch
 import os
 import numpy as np
 import copy
 import json
 import matplotlib.pyplot as plt
-from settings import MODELS_FOLDER, HYPERPARAMS_FOLDER
-from torch.amp import GradScaler, autocast
-from misc.labels import LabelType
+from settings import MODELS_FOLDER, HYPERPARAMETERS_FOLDER
 from training.metrics import *
+from utils import distribuir_suma_exacta
 
 
 class Metrics:
@@ -97,15 +94,9 @@ class ValSubset(Subset):
 
 
 class TrainSubset(Dataset):
-    def __init__(self, subsets, names, weights):
+    def __init__(self, subsets, names):
         self.dataset = torch.utils.data.ConcatDataset(subsets)
         self.names = names
-        
-        sample_weights = []
-        for i, subset in enumerate(subsets):
-            sample_weights.extend([weights[i]] * len(subset))
-            
-        self.sample_weights = torch.DoubleTensor(sample_weights)
 
     def __getitem__(self, index):
         data = self.dataset[index]
@@ -116,22 +107,18 @@ class TrainSubset(Dataset):
 
 
 class DataManager:
-    def __init__(self, datasets, train_size, train_weights, test_size, test_weights, seed):
+    def __init__(self, datasets, train_size, test_size, seed):
         self.datasets = datasets
         self.train_size = train_size
-        self.train_weights = train_weights
         self.test_size = test_size
-        self.test_weights = test_weights
         
         self.generator = torch.Generator().manual_seed(seed)
-        proportion = test_size / (train_size + test_size)
         
         self.split_datasets = []
-        for i, dataset in enumerate(datasets):
-            min_size = int(len(dataset) * proportion)
+        for dataset in datasets:
             val_part, train_part = random_split(
                 dataset, 
-                [min_size, len(dataset) - min_size],
+                [test_size, len(dataset) - test_size],
                 generator=self.generator
             )
             
@@ -143,14 +130,12 @@ class DataManager:
 
     def get_val_subsets(self, phase):
         active_test_subsets = []
-        active_weights = self.test_weights[:phase]
-        total_test_w = sum(active_weights)
+        subset_sizes = [1 for _ in range(phase)]
+        subset_sizes = distribuir_suma_exacta(subset_sizes, self.test_size)
 
         for i in range(phase):
             entry = self.split_datasets[i]
-            subset_size = int(self.test_size * active_weights[i] / total_test_w)
-            
-            if subset_size == 0: continue
+            subset_size = subset_sizes[i]
             
             val_subset, _ = random_split(
                 entry['val_pool'], 
@@ -164,41 +149,36 @@ class DataManager:
     def get_train_subset(self, phase):
         train_subsets = []
         dataset_names = []
-        
-        active_train_weights = self.train_weights[:phase]
-        total_tw = sum(active_train_weights)
+
+        subset_sizes = [1 for _ in range(phase)]
+        subset_sizes = distribuir_suma_exacta(subset_sizes, self.train_size)
 
         for i in range(phase):
             entry = self.split_datasets[i]
-            train_size_i = int(self.train_size * active_train_weights[i] / total_tw)
-            
-            if train_size_i == 0: continue
-            
-            actual_train_size = min(train_size_i, len(entry['train_pool']))
-            
+            subset_size = subset_sizes[i]
+
             train_subset, _ = random_split(
                 entry['train_pool'], 
-                [actual_train_size, len(entry['train_pool']) - actual_train_size],
+                [subset_size, len(entry['train_pool']) - subset_size],
                 generator=torch.Generator().manual_seed(42)
             )
-            
+
             train_subsets.append(train_subset)
             dataset_names.append(entry['name'])
 
-        return TrainSubset(train_subsets, dataset_names, active_train_weights)
+        return TrainSubset(train_subsets, dataset_names)
     
 
 class ModelScorer:
-    def __init__(self, model, epoch_weights):
+    def __init__(self, model):
         self.model = model
-        self.epoch_weights = epoch_weights
         self.best_models = {}
 
     def update_best_models(self, epoch, val_metrics: EpochMetrics):
         aux_dataset = list(val_metrics.subset_metrics.keys())[0]
         for metric in val_metrics.subset_metrics[aux_dataset].keys():
             sign = 1 if metric.maximize else -1
-            score = sign * sum([val_metrics.subset_metrics[dataset][metric][-1] * self.epoch_weights[i] / sum(self.epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
+            score = sign * sum([val_metrics.subset_metrics[dataset][metric][-1] for dataset in val_metrics.subset_metrics.keys()]) / len(val_metrics.subset_metrics.keys())
 
             if metric in self.best_models and score < self.best_models[metric]["score"]: continue
 
@@ -225,69 +205,70 @@ class ModelScorer:
         return self.best_models[metric]["epoch"]
     
     
-def train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler):
+def train_epoch(model, train_loader, optimizer, loss_function, metrics, device):
     model.train()
 
-    for *inputs, y_batch in train_loader:
+    for inputs, y_batch in train_loader:
         # Transferencia asíncrona
         inputs = [i.to(device, non_blocking=True) for i in inputs]
-        y_batch = y_batch.to(device, non_blocking=True)
+        targets = [t.to(device, non_blocking=True) for t in y_batch]
 
-        optimizer.zero_grad(set_to_none=True) # Más eficiente que zero_grad()
+        logits = model(*inputs)
 
-        # Autocast para precisión mixta (FP16)
-        with autocast(device.type):
-            logits = model(*inputs)
-            loss = loss_function.step(logits, y_batch)
-            for metric in metrics: metric.step(logits, y_batch)
+        total_loss = 0
+        for target in targets:
+            total_loss += loss_function.step(logits, target)
 
-        # Escalamiento de gradientes para evitar subdesbordamiento (underflow)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        for metric in metrics:
+            for target in targets:
+                metric.step(logits, target)
+
+        optimizer.zero_grad(set_to_none=True)
+        total_loss.backward()
+        optimizer.step()
 
     loss = loss_function.compute()
     values = [metric.compute() for metric in metrics]
 
     return loss, values
+
 
 def val_epoch(model, val_loader, loss_function, metrics, device):
     model.eval()
 
     # Usamos autocast también en validación para que las activaciones 
     # tengan el mismo formato que en el entrenamiento
-    with torch.no_grad(), autocast(device.type):
-        for batch in val_loader:
+    with torch.no_grad():
+        for inputs_batch, y_batch in val_loader:
             # Desempaquetado dinámico para mayor flexibilidad
-            *inputs, y_batch = [i.to(device, non_blocking=True) for i in batch]
+            inputs = [i.to(device, non_blocking=True) for i in inputs_batch]
+            targets = [t.to(device, non_blocking=True) for t in y_batch]
+
             logits = model(*inputs)
-            loss = loss_function.step(logits, y_batch)
-            for metric in metrics: metric.step(logits, y_batch)
+
+            for target in targets:
+                loss_function.step(logits, target)
+
+            for metric in metrics:
+                for target in targets:
+                    metric.step(logits, target)
 
     loss = loss_function.compute()
     values = [metric.compute() for metric in metrics]
 
     return loss, values
 
-def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer: ModelScorer, patience, metrics, device): 
-    sampler = torch.utils.data.WeightedRandomSampler(
-        weights=train_set.sample_weights, 
-        num_samples=len(train_set), 
-        replacement=True
-    )
 
+def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer: ModelScorer, patience, metrics, device):
     num_workers = os.cpu_count()
     train_loader = DataLoader(
         train_set, 
         batch_size=batch_size, 
-        sampler=sampler, 
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
         prefetch_factor=2,
         persistent_workers=True
     )
-    
-    scaler = GradScaler(device.type)
 
     test_loaders = []
     for test_set in test_sets: 
@@ -301,7 +282,7 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
     val_metrics = EpochMetrics()
     
     for epoch in range(1, epochs+1):
-        loss, values = train_epoch(model, train_loader, optimizer, loss_function, metrics, device, scaler)
+        loss, values = train_epoch(model, train_loader, optimizer, loss_function, metrics, device)
         train_metrics.add_value("train", loss_function, loss)
         for i, value in enumerate(values):
             train_metrics.add_value("train", metrics[i], value)
@@ -324,9 +305,8 @@ def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weigh
 
     return weights, train_metrics, val_metrics
 
-def train(model, epochs, datasets, train_size, train_weights, test_size, test_weights, batch_size, learning_rate, weight_decay, patience, metrics, seed=42):
-    data_manager = DataManager(datasets, train_size, train_weights, test_size, test_weights, seed)
-    #stats = TrainingStats()
+def train(model, epochs, datasets, train_size, test_size, batch_size, learning_rate, weight_decay, loss_function, patience, metrics, seed=42):
+    data_manager = DataManager(datasets, train_size, test_size, seed)
     phases = len(datasets)
 
     ### CONFIG
@@ -338,23 +318,17 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
     torch.manual_seed(seed)
     torch.set_num_threads(os.cpu_count())
     model = model.to(device)
-    
-    if datasets[0].label_type == LabelType.BEST_ACTION.value:
-        loss_function = CrossEntropyLoss()
-    else:
-        loss_function = KL_Divergence(tau=0.1)
 
     for phase in range(1, phases+1):
         if epochs[phase-1] == 0: continue
         test_sets = data_manager.get_val_subsets(phase)
         train_set = data_manager.get_train_subset(phase)
         
-        epoch_weights = test_weights[:phase]
-        model_scorer = ModelScorer(model, epoch_weights)
+        model_scorer = ModelScorer(model)
 
         def print_epoch_results(epoch, train_metrics, val_metrics):
             print(f'{'\n' if epoch == 1 else ''}Epoch {epoch}/{epochs[phase-1]}')
-            val_epoch_loss = sum([val_metrics.subset_metrics[dataset][loss_function][-1] * epoch_weights[i] / sum(epoch_weights) for i, dataset in enumerate(val_metrics.subset_metrics.keys())])
+            val_epoch_loss = sum([val_metrics.subset_metrics[dataset][loss_function][-1] for dataset in val_metrics.subset_metrics.keys()]) / phase
             train_epoch_loss = train_metrics.subset_metrics["train"][loss_function][-1]
             print(f"    Average - Train Loss: {loss_function.format(train_epoch_loss)} | Val Loss: {loss_function.format(val_epoch_loss)}", end='')
 
@@ -362,7 +336,7 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
                 if metric == loss_function: continue
                 val_epoch_metric = 0
                 for i, dataset in enumerate(val_metrics.subset_metrics.keys()):
-                    val_epoch_metric += val_metrics.subset_metrics[dataset][metric][-1] * epoch_weights[i] / sum(epoch_weights)
+                    val_epoch_metric += val_metrics.subset_metrics[dataset][metric][-1] / phase
                 print(f' | {metric.name}: {metric.format(val_epoch_metric)}', end='')
             print()
 
@@ -381,23 +355,24 @@ def train(model, epochs, datasets, train_size, train_weights, test_size, test_we
 
         #stats.add_phase_stats(train_metrics, val_metrics)
 
-    return best_weights
+    return model
 
-def save_model(model, weights, model_name):
-    os.makedirs(HYPERPARAMS_FOLDER, exist_ok=True)
-    with open(str(HYPERPARAMS_FOLDER / model_name) + ".json", 'w') as f:
+def save_model(model, model_name):
+    os.makedirs(HYPERPARAMETERS_FOLDER, exist_ok=True)
+    with open(str(HYPERPARAMETERS_FOLDER / model_name) + ".json", 'w') as f:
         json.dump(model.hyperparams, f, indent=4)
 
     os.makedirs(MODELS_FOLDER, exist_ok=True)
+    weights = model.state_dict()
     torch.save(weights, str(MODELS_FOLDER / model_name) + ".pth")
     print(f"✅ Modelo guardado en {MODELS_FOLDER / model_name}.pth")
 
 def load_hyperparams(model_name):
-    with open(str(HYPERPARAMS_FOLDER / model_name) + ".json", 'r') as f:
+    with open(str(HYPERPARAMETERS_FOLDER / model_name) + ".json", 'r') as f:
         return json.load(f)
 
 def load_model(model_class: object, model_name):
-    with open(str(HYPERPARAMS_FOLDER / model_name) + ".json", 'r') as f:
+    with open(str(HYPERPARAMETERS_FOLDER / model_name) + ".json", 'r') as f:
         hyperparams = json.load(f)
 
     model = model_class(**hyperparams)

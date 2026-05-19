@@ -8,20 +8,15 @@ class Transformer(nn.Module, ABC):
         super(Transformer, self).__init__()
         self.hyperparams = hyperparams
         self.biased = False
-
-    @abstractmethod
-    def encode(self, block_features):
-        pass
-
-    @abstractmethod
-    def decode(self, memory, *args, **kwargs):
-        pass
-
-    def forward(self, block_features, *decoder_args, **decoder_kwargs):
-        memory = self.encode(block_features)
-        return self.decode(memory, *decoder_args, **decoder_kwargs)
     
-class BiasedTransformer(Transformer):
-    def __init__(self, **hyperparams):
-        super(BiasedTransformer, self).__init__(**hyperparams)
-        self.biased = True
+    @abstractmethod
+    def encode(self, *args):
+        pass
+
+    @abstractmethod
+    def decode(self, *args):
+        pass
+
+    def forward(self, block_data, *args):
+        enc_data = self.encode(block_data)
+        return self.decode(*enc_data, *args)

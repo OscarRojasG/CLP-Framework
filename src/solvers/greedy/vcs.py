@@ -1,11 +1,10 @@
 import subprocess
 from settings import VCS_SOLVER_PATH, INSTANCE_FOLDER
-from solvers.greedy.greedy_solver import GreedySolver
+from solvers.solver import Solver
 
-class VCSSolver(GreedySolver):
+class VCSSolver(Solver):
     def __init__(self, min_fr):
-        super().__init__("VCS")
-        self.min_fr = min_fr
+        super().__init__("VCS", min_fr)
 
     def solve(self, instance_file, instance_number):
         # Ejecutar el proceso y capturar la salida

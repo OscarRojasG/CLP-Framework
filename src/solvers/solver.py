@@ -2,8 +2,9 @@ from abc import ABC, abstractmethod
 from settings import INSTANCE_FOLDER
 
 class Solver(ABC):
-    def __init__(self, name):
+    def __init__(self, name, min_fr):
         self.name = name
+        self.min_fr = min_fr
 
     def solve_all(self, file):
         path = INSTANCE_FOLDER / file

@@ -38,6 +38,9 @@ class InputAdapterV2(InputAdapter):
             placed_blocks[:n_pb] = [pb.id for pb in pblocks]
 
             features_list = []
+            # Tolerancia para imprecisiones de punto flotante al normalizar
+            epsilon = 1e-5
+
             for pb in pblocks:
                 # Accedemos a las dimensiones del bloque usando su ID
                 b_dim = blocks[pb.id]
@@ -45,11 +48,16 @@ class InputAdapterV2(InputAdapter):
                 # Verificamos si el bloque está pegado a las caras externas de este 'space'
                 touches_space = (
                     # Contacto en Eje X (Izquierda o Derecha)
-                    (pb.x + b_dim.l) == space.x or pb.x == (space.x + space.l) or
+                    abs((pb.x + b_dim.l) - space.x) < epsilon or 
+                    abs(pb.x - (space.x + space.l)) < epsilon or
+                    
                     # Contacto en Eje Y (Frente o Atrás)
-                    (pb.y + b_dim.w) == space.y or pb.y == (space.y + space.w) or
+                    abs((pb.y + b_dim.w) - space.y) < epsilon or 
+                    abs(pb.y - (space.y + space.w)) < epsilon or
+                    
                     # Contacto en Eje Z (Abajo o Arriba)
-                    (pb.z + b_dim.h) == space.z or pb.z == (space.z + space.h)
+                    abs((pb.z + b_dim.h) - space.z) < epsilon or 
+                    abs(pb.z - (space.z + space.h)) < epsilon
                 )
                 
                 # Convertimos el booleano a 1.0 o 0.0

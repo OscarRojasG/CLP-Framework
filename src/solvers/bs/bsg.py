@@ -1,6 +1,6 @@
 import subprocess
 from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
-from solvers.bs.bs_solver import BS_Solver
+from solvers.bs.bsm_solver import BS_Solver
 
 class BSG_Solver(BS_Solver):
     def __init__(self):

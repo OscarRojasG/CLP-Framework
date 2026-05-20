@@ -1,6 +1,6 @@
 from models.base.transformer import Transformer
 from bsm_engine import BSM_VCS
-from solvers.bs.bs_solver import BSM_Solver
+from solvers.bs.bsm_solver import BSM_Solver
 import torch
 
 class BSM_VCS_Solver(BSM_Solver):

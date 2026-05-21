@@ -93,80 +93,62 @@ class ValSubset(Subset):
         self.name = name
 
 
+# Modificado para entrelazar homogéneamente los datasets activos
 class TrainSubset(Dataset):
     def __init__(self, subsets, names):
-        self.dataset = torch.utils.data.ConcatDataset(subsets)
+        self.subsets = subsets
         self.names = names
+        self.num_datasets = len(subsets)
+        # Como configuras tamaños fijos idénticos por dataset, tomamos el largo del primero
+        self.single_len = len(subsets[0]) 
+        self.total_len = self.single_len * self.num_datasets
 
     def __getitem__(self, index):
-        data = self.dataset[index]
-        return data
+        # Determina a qué dataset corresponde el índice actual de forma cíclica
+        dataset_idx = index % self.num_datasets
+        # Determina la muestra interna correspondiente dentro de ese dataset
+        sample_idx = index // self.num_datasets
+        return self.subsets[dataset_idx][sample_idx]
 
     def __len__(self):
-        return len(self.dataset)
+        return self.total_len
 
 
 class DataManager:
     def __init__(self, datasets, train_size, test_size, seed):
-        self.datasets = datasets
-        self.train_size = train_size
-        self.test_size = test_size
-        
         self.generator = torch.Generator().manual_seed(seed)
+        self.processed_datasets = []
         
-        self.split_datasets = []
+        # Particionamos cada dataset en sus tamaños definitivos desde el inicio
         for dataset in datasets:
-            val_part, train_part = random_split(
+            remainder = len(dataset) - train_size - test_size
+            train_part, val_part, _ = random_split(
                 dataset, 
-                [test_size, len(dataset) - test_size],
+                [train_size, test_size, remainder],
                 generator=self.generator
             )
             
-            self.split_datasets.append({
-                'train_pool': train_part,
-                'val_pool': val_part,
+            self.processed_datasets.append({
+                'train': train_part,
+                'val': val_part,
                 'name': dataset.name
             })
 
-    def get_val_subsets(self, phase):
-        active_test_subsets = []
-        subset_sizes = [1 for _ in range(phase)]
-        subset_sizes = distribuir_suma_exacta(subset_sizes, self.test_size)
+    def get_train_subset(self, phase):
+        # Fase X acumula el entrenamiento de los primeros X datasets
+        train_subsets = [self.processed_datasets[i]['train'] for i in range(phase)]
+        dataset_names = [self.processed_datasets[i]['name'] for i in range(phase)]
+        
+        return TrainSubset(train_subsets, dataset_names)
 
+    def get_val_subsets(self, phase):
+        # Fase X devuelve una lista con las validaciones independientes de los primeros X datasets
+        active_test_subsets = []
         for i in range(phase):
-            entry = self.split_datasets[i]
-            subset_size = subset_sizes[i]
-            
-            val_subset, _ = random_split(
-                entry['val_pool'], 
-                [subset_size, len(entry['val_pool']) - subset_size],
-                generator=torch.Generator().manual_seed(42)
-            )
-            active_test_subsets.append(ValSubset(subset=val_subset, name=entry['name']))
+            entry = self.processed_datasets[i]
+            active_test_subsets.append(ValSubset(subset=entry['val'], name=entry['name']))
             
         return active_test_subsets
-
-    def get_train_subset(self, phase):
-        train_subsets = []
-        dataset_names = []
-
-        subset_sizes = [1 for _ in range(phase)]
-        subset_sizes = distribuir_suma_exacta(subset_sizes, self.train_size)
-
-        for i in range(phase):
-            entry = self.split_datasets[i]
-            subset_size = subset_sizes[i]
-
-            train_subset, _ = random_split(
-                entry['train_pool'], 
-                [subset_size, len(entry['train_pool']) - subset_size],
-                generator=torch.Generator().manual_seed(42)
-            )
-
-            train_subsets.append(train_subset)
-            dataset_names.append(entry['name'])
-
-        return TrainSubset(train_subsets, dataset_names)
     
 
 class ModelScorer:
@@ -236,8 +218,6 @@ def train_epoch(model, train_loader, optimizer, loss_function, metrics, device):
 def val_epoch(model, val_loader, loss_function, metrics, device):
     model.eval()
 
-    # Usamos autocast también en validación para que las activaciones 
-    # tengan el mismo formato que en el entrenamiento
     with torch.no_grad():
         for inputs_batch, y_batch in val_loader:
             # Desempaquetado dinámico para mayor flexibilidad
@@ -261,9 +241,13 @@ def val_epoch(model, val_loader, loss_function, metrics, device):
 
 def _train(model, epochs, train_set, test_sets, batch_size, learning_rate, weight_decay, loss_function, print_epoch_results, model_scorer: ModelScorer, patience, metrics, device):
     num_workers = os.cpu_count()
+    
+    # IMPORTANTE: shuffle=False para mantener nuestro orden entrelazado perfecto por batch.
+    # No hay pérdida de aleatoriedad porque los subsets ya fueron mezclados por el random_split original.
     train_loader = DataLoader(
         train_set, 
         batch_size=batch_size, 
+        shuffle=False, 
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
         prefetch_factor=2,
@@ -310,9 +294,7 @@ def train(model, epochs, datasets, train_size, test_size, batch_size, learning_r
     phases = len(datasets)
 
     ### CONFIG
-    device = torch.device("cuda" if torch.cuda.is_available() 
-                          else "mps" if torch.backends.mps.is_available() 
-                          else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"ℹ️ Usando dispositivo: {device}")
 
     torch.manual_seed(seed)

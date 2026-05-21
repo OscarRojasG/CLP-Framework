@@ -7,5 +7,5 @@ class OutputAdapter(DataAdapter):
         super().__init__(data_keys)
 
     @abstractmethod
-    def output_2_vec(self, actions: list[Action], selected_block: int, greedy: float):
+    def output_2_vec(self, actions: list[Action], selected_block: int, greedy: list):
         pass

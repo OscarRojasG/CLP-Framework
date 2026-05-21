@@ -19,5 +19,5 @@ class InputAdapter(DataAdapter):
         pass
     
     @abstractmethod
-    def dec_2_vec(self, space: Space, pblocks: list[PBlock], actions: list[Action]):
+    def dec_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
         pass

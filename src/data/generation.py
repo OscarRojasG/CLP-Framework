@@ -7,6 +7,7 @@ from data.objects import *
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import random
 
 
 def read_output(filepath: str):
@@ -16,8 +17,12 @@ def read_output(filepath: str):
     it = iter(lines)
     blocks = []
 
-    # 1. Leer los BLOCKS una sola vez al principio
+    # 2. Leer los BLOCKS una sola vez al principio
     for line in it:
+        if line == "% volume utilization":
+            final_volume = float(next(it))
+            #print(final_volume)
+
         if line == "BLOCKS":
             for l in it:
                 if l == "SOLVE STEPS":
@@ -25,13 +30,14 @@ def read_output(filepath: str):
                 blocks.append(Block(list(map(float, l.split()))))
             break # Salimos del guardado inicial de bloques
 
-    # 2. Bucle principal para el resto del archivo (Actions, Placed, Space...)
+    # 3. Bucle principal para el resto del archivo (Actions, Placed, Space...)
     for line in it:
         # Buscamos el inicio de una iteración (Actions)
         if line == "Actions":
             actions = []
             pblocks = []
             space = None
+            greedy = []
 
             # --- Leer Actions ---
             for l in it:
@@ -53,53 +59,34 @@ def read_output(filepath: str):
             next(it)
             selected_block = int(next(it))
 
+            # --- Evaluaciones Greedy ---
+            next(it)
+            for l in it:
+                if l == "Volume":
+                    break
+                greedy.append(float(l))
+
             # --- Volumen actual ---
-            next(it)
             volume = float(next(it))
-
-            # --- Dato final (Greedy) ---
-            next(it)
-            greedy = float(next(it))
             
-            # Retornamos los datos actuales JUNTO con los bloques iniciales
-            yield blocks, actions, pblocks, space, selected_block, greedy
+            yield blocks, actions, pblocks, space, selected_block, greedy, final_volume
 
 
-def get_rank(actions, selected_block):
-    for i, action in enumerate(actions):
-        if action.block_id == selected_block:
-            return i
-        
-
-def generate_data_from_file(filepath, input_adapter, output_adapter, ranks, min_blocks, min_actions):
-    # read_output(filepath) ahora es un objeto generador
-    for blocks, actions, pblocks, space, selected_block, greedy in read_output(filepath):
-        if len(blocks) < min_blocks:
-            return
-        
-        if len(actions) < min_actions:
-            continue
-
-        input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
-        input_adapter.add(input_data)
-
-        output_data = output_adapter.output_2_vec(actions, selected_block, greedy)
-        output_adapter.add(output_data)
-
-        rank = get_rank(actions, selected_block)
-        ranks.append(rank)
+def get_rank(actions, greedy):
+    return np.argmax(greedy)
 
 
-def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions):
+def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions, max_actions):
     """
-    Procesa un solo archivo de forma aislada y acumula los resultados locales.
-    No toca ningún estado global.
+    Procesa un solo archivo de forma aislada. 
+    Si 'random_one' es True, procesa toda la partida secuencialmente y al final
+    selecciona un único paso aleatorio para evitar la correlación temporal.
     """
     local_inputs = []
     local_outputs = []
     local_ranks = []
     
-    for blocks, actions, pblocks, space, selected_block, greedy in read_output(filepath):
+    for blocks, actions, pblocks, space, selected_block, greedy, final_volume in read_output(filepath):
         if len(blocks) < min_blocks:
             # Si un archivo no cumple la condición de bloques, 
             # descartamos lo que llevamos de este archivo.
@@ -108,21 +95,25 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
         if len(actions) < min_actions:
             continue
 
-        # Nota: Aquí asumimos que input_adapter.input_2_vec y output_2_vec 
-        # son funciones puras (no modifican estado interno del adaptador)
+        rank = get_rank(actions, greedy)
+        if rank >= max_actions:
+            continue
+
+        actions = actions[:max_actions]
+        greedy = greedy[:max_actions]
+
         input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
         local_inputs.append(input_data)
 
         output_data = output_adapter.output_2_vec(actions, selected_block, greedy)
         local_outputs.append(output_data)
 
-        rank = get_rank(actions, selected_block)
         local_ranks.append(rank)
         
     return local_inputs, local_outputs, local_ranks
 
 
-def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, prefix=None):
+def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, max_actions, prefix=None):
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
     # 1. Obtener y ordenar la lista de archivos para asegurar determinismo
@@ -139,7 +130,8 @@ def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions
         input_adapter=input_adapter, 
         output_adapter=output_adapter, 
         min_blocks=min_blocks, 
-        min_actions=min_actions
+        min_actions=min_actions,
+        max_actions=max_actions
     )
 
     # 2. Procesar en paralelo usando un pool de hilos

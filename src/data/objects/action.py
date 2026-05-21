@@ -20,3 +20,8 @@ class Action:
         vcs_norm = 1.0 - np.exp(-gamma * self.vcs)
         
         return vcs_norm
+
+    def calc_vcs(self):
+        if np.isinf(self.vcs):
+            return 1.0
+        return self.vcs

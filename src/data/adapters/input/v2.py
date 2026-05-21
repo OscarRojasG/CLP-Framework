@@ -4,75 +4,55 @@ from data.adapters.input.input_adapter import InputAdapter
 
 class InputAdapterV2(InputAdapter):
     def __init__(self, max_blocks: int, max_pblocks: int, max_actions: int):
+        # Actualizamos el diccionario del constructor con las nuevas llaves semánticas
         super().__init__({
             "block_features": np.float32,
             "action_blocks": np.int32,
-            "action_features": np.float32,
-            "placed_blocks": np.int32,
-            "placed_features": np.float32,
-            "space_features": np.float32,
+            "placed_coords": np.float32,
+            "action_features": np.float32
         }, max_blocks, max_pblocks)
         self.max_actions = max_actions
     
     def enc_2_vec(self, blocks: list[Block]):
-        block_features = np.full((self.max_blocks, 8), -1, dtype=np.float32)
+        block_features = np.full((self.max_blocks, 5), -1, dtype=np.float32)
 
         n_b = len(blocks)
-        block_features[:n_b] = [[b.l, b.w, b.h, b.volume(), 1/b.n, b.lw(), b.wh(), b.lh()] for b in blocks[:n_b]]
+        block_features[:n_b] = [[b.l, b.w, b.h, b.volume(), 1/b.n] for b in blocks[:n_b]]
 
         return (block_features, )
     
     def dec_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
         action_blocks = np.full((self.max_actions,), -1, dtype=np.int32)
         action_features = np.full((self.max_actions, 2), -1, dtype=np.float32)
-        placed_blocks = np.full((self.max_pblocks,), -1, dtype=np.int32)
-        placed_features = np.full((self.max_pblocks, 4), -1, dtype=np.float32)
-        space_features = np.array([space.x, space.y, space.z, space.l, space.w, space.h], dtype=np.float32)
+        
+        # El único tensor geométrico explícito: coordenadas relativas de lo que ya está construido
+        placed_coords = np.full((self.max_pblocks, 6), -1, dtype=np.float32)
 
-        n_a = len(actions)
-        action_blocks[:n_a] = [a.block_id for a in actions]
-        action_features[:n_a] = [[a.loss if a.loss > 0 else 0, a.cs] for a in actions]
-
+        # 2. Entorno Relativo de Bloques Colocados
         n_pb = len(pblocks)
         if n_pb > 0:
-            placed_blocks[:n_pb] = [pb.id for pb in pblocks]
+            for i, pb in enumerate(pblocks[:n_pb]):
+                block = blocks[pb.id]
+                
+                # Todo se mide como un desplazamiento respecto al inicio de la zona de juego actual
+                rel_x1 = pb.x - space.x
+                rel_y1 = pb.y - space.y
+                rel_z1 = pb.z - space.z
+                
+                rel_x2 = (pb.x + block.l) - space.x
+                rel_y2 = (pb.y + block.w) - space.y
+                rel_z2 = (pb.z + block.h) - space.z
+                
+                placed_coords[i] = [rel_x1, rel_y1, rel_z1, rel_x2, rel_y2, rel_z2]
 
-            features_list = []
-            # Tolerancia para imprecisiones de punto flotante al normalizar
-            epsilon = 1e-5
+        # 1. Acciones Candidatas (Identidad + Desempeño)
+        n_a = len(actions)
+        action_blocks[:n_a] = [a.block_id for a in actions]
+        for i, a in enumerate(actions[:n_a]):
+            action_features[i] = [a.loss if a.loss > 0 else 0, a.cs]
 
-            for pb in pblocks:
-                # Accedemos a las dimensiones del bloque usando su ID
-                b_dim = blocks[pb.id]
-                
-                # Verificamos si el bloque está pegado a las caras externas de este 'space'
-                touches_space = (
-                    # Contacto en Eje X (Izquierda o Derecha)
-                    abs((pb.x + b_dim.l) - space.x) < epsilon or 
-                    abs(pb.x - (space.x + space.l)) < epsilon or
-                    
-                    # Contacto en Eje Y (Frente o Atrás)
-                    abs((pb.y + b_dim.w) - space.y) < epsilon or 
-                    abs(pb.y - (space.y + space.w)) < epsilon or
-                    
-                    # Contacto en Eje Z (Abajo o Arriba)
-                    abs((pb.z + b_dim.h) - space.z) < epsilon or 
-                    abs(pb.z - (space.z + space.h)) < epsilon
-                )
-                
-                # Convertimos el booleano a 1.0 o 0.0
-                contact_flag = 1.0 if touches_space else 0.0
-                
-                # Guardamos las 4 features
-                features_list.append([pb.x, pb.y, pb.z, contact_flag])
-            
-            # Asignamos la matriz de características generada
-            placed_features[:n_pb] = features_list
-            
         return (
             action_blocks,
-            action_features,
-            placed_blocks,
-            placed_features,
-            space_features
+            placed_coords,
+            action_features
         )

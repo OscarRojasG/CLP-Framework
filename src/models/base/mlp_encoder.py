@@ -14,7 +14,7 @@ class MLPBlock(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        return self.norm(x + self.ffn(x))
+        return x + self.ffn(self.norm(x))
 
 class MLPEncoder(nn.Module):
     def __init__(self, d_model, ff_dim_multiplier, dropout, num_layers=1):

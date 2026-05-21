@@ -14,7 +14,7 @@ class GreedyModelSolver(Solver, EnvSolver):
         self.w = w
         self.input_adapter = input_adapter
 
-    def solve(self, instance_file, instance_number):
+    def solve(self, instance_file, instance_number, plot=False):
         instance_file = str(INSTANCE_FOLDER / instance_file) 
         
         if os.path.exists(instance_file) == False:
@@ -44,6 +44,9 @@ class GreedyModelSolver(Solver, EnvSolver):
                 selected_block = action_data[best_index].block_id
                 
                 env.transition(selected_block)
+
+        if (plot):
+            self.plot(block_data, env)
 
         vol = env.volume * 100
         time = env.final_time

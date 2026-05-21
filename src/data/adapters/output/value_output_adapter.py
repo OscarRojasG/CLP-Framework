@@ -8,5 +8,5 @@ class ValueOutputAdapter(OutputAdapter):
             "Y": np.float32
         })
 
-    def output_2_vec(self, actions: list[Action], selected_block: int, greedy: float):
-        return (100 * (1-greedy), )
+    def output_2_vec(self, actions: list[Action], selected_block: int, greedy: list):
+        return (100 * (1-max(greedy)), )

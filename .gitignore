@@ -221,7 +221,7 @@ instances/**
 models/**
 outputs/**
 stats/**
-experiments/*.csv
+experiments/**
 
 notebooks/testing
 

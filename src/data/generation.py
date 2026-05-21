@@ -7,6 +7,7 @@ from data.objects import *
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import random
 
 
 def read_output(filepath: str):
@@ -16,8 +17,12 @@ def read_output(filepath: str):
     it = iter(lines)
     blocks = []
 
-    # 1. Leer los BLOCKS una sola vez al principio
+    # 2. Leer los BLOCKS una sola vez al principio
     for line in it:
+        if line == "% volume utilization":
+            final_volume = float(next(it))
+            #print(final_volume)
+
         if line == "BLOCKS":
             for l in it:
                 if l == "SOLVE STEPS":
@@ -25,13 +30,14 @@ def read_output(filepath: str):
                 blocks.append(Block(list(map(float, l.split()))))
             break # Salimos del guardado inicial de bloques
 
-    # 2. Bucle principal para el resto del archivo (Actions, Placed, Space...)
+    # 3. Bucle principal para el resto del archivo (Actions, Placed, Space...)
     for line in it:
         # Buscamos el inicio de una iteración (Actions)
         if line == "Actions":
             actions = []
             pblocks = []
             space = None
+            greedy = []
 
             # --- Leer Actions ---
             for l in it:
@@ -53,53 +59,41 @@ def read_output(filepath: str):
             next(it)
             selected_block = int(next(it))
 
+            # --- Evaluaciones Greedy ---
+            next(it)
+            for l in it:
+                if l == "Volume":
+                    break
+                greedy.append(float(l))
+
             # --- Volumen actual ---
-            next(it)
             volume = float(next(it))
-
-            # --- Dato final (Greedy) ---
-            next(it)
-            greedy = float(next(it))
             
-            # Retornamos los datos actuales JUNTO con los bloques iniciales
-            yield blocks, actions, pblocks, space, selected_block, greedy
+            yield blocks, actions, pblocks, space, selected_block, greedy, final_volume
 
 
-def get_rank(actions, selected_block):
-    for i, action in enumerate(actions):
-        if action.block_id == selected_block:
-            return i
-        
-
-def generate_data_from_file(filepath, input_adapter, output_adapter, ranks, min_blocks, min_actions):
-    # read_output(filepath) ahora es un objeto generador
-    for blocks, actions, pblocks, space, selected_block, greedy in read_output(filepath):
-        if len(blocks) < min_blocks:
-            return
-        
-        if len(actions) < min_actions:
-            continue
-
-        input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
-        input_adapter.add(input_data)
-
-        output_data = output_adapter.output_2_vec(actions, selected_block, greedy)
-        output_adapter.add(output_data)
-
-        rank = get_rank(actions, selected_block)
-        ranks.append(rank)
+def get_rank(actions, greedy, selected_block):
+    rank = 999999
+    for i, a in enumerate(actions):
+        if a.block_id == selected_block:
+            rank = i
+            break
+    return rank
 
 
-def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions):
+v = []
+def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions, max_actions):
+    global v
     """
-    Procesa un solo archivo de forma aislada y acumula los resultados locales.
-    No toca ningún estado global.
+    Procesa un solo archivo de forma aislada. 
+    Si 'random_one' es True, procesa toda la partida secuencialmente y al final
+    selecciona un único paso aleatorio para evitar la correlación temporal.
     """
     local_inputs = []
     local_outputs = []
     local_ranks = []
     
-    for blocks, actions, pblocks, space, selected_block, greedy in read_output(filepath):
+    for blocks, actions, pblocks, space, selected_block, greedy, final_volume in read_output(filepath):
         if len(blocks) < min_blocks:
             # Si un archivo no cumple la condición de bloques, 
             # descartamos lo que llevamos de este archivo.
@@ -108,21 +102,25 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
         if len(actions) < min_actions:
             continue
 
-        # Nota: Aquí asumimos que input_adapter.input_2_vec y output_2_vec 
-        # son funciones puras (no modifican estado interno del adaptador)
+        rank = get_rank(actions, greedy, selected_block)
+        if rank >= max_actions:
+            continue
+        v.append(final_volume)
+        actions = actions[:max_actions]
+        greedy = greedy[:max_actions]
+
         input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
         local_inputs.append(input_data)
 
         output_data = output_adapter.output_2_vec(actions, selected_block, greedy)
         local_outputs.append(output_data)
 
-        rank = get_rank(actions, selected_block)
         local_ranks.append(rank)
         
     return local_inputs, local_outputs, local_ranks
 
 
-def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, prefix=None):
+def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, max_actions, prefix=None):
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
     # 1. Obtener y ordenar la lista de archivos para asegurar determinismo
@@ -139,7 +137,8 @@ def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions
         input_adapter=input_adapter, 
         output_adapter=output_adapter, 
         min_blocks=min_blocks, 
-        min_actions=min_actions
+        min_actions=min_actions,
+        max_actions=max_actions
     )
 
     # 2. Procesar en paralelo usando un pool de hilos
@@ -210,8 +209,9 @@ def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, doub
             os.path.join(INSTANCE_FOLDER, instance_filename), 
             "-i", str(i), 
             "-w", str(w), 
+            "-n", str(num_actions),
             f"--min_fr={min_fr}", 
-            f"--verbose2={num_actions}"
+            f"--verbose"
         ]
 
         if double_effort:
@@ -226,7 +226,7 @@ def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, doub
         )
 
 
-def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1, double_effort=True):
+def run_instances_parallel(instance_filename, w, num_actions, min_fr, double_effort, max_workers=None):
     # Leer número de instancias
     with open(INSTANCE_FOLDER / instance_filename, "r") as f:
         num_instances = int(f.readline().strip())
@@ -240,7 +240,7 @@ def run_instances_parallel(instance_filename, w=8, max_workers=None, min_fr=1, d
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr, w*w, double_effort) 
+            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr, num_actions, double_effort) 
             for i in range(num_instances)
         ]
             

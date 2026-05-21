@@ -25,7 +25,7 @@ class GreedyModelSolver(Solver, EnvSolver):
         block_data = self.process_block_data(env.get_block_data())
 
         enc_data = self.input_adapter.enc_2_vec(block_data)
-        enc_data = tuple(torch.from_numpy(data).unsqueeze(0) for data in enc_data)
+        enc_data = tuple(torch.as_tensor(data).unsqueeze(0) for data in enc_data)
         
         with torch.no_grad():
             enc_data = self.model.encode(*enc_data)
@@ -36,7 +36,7 @@ class GreedyModelSolver(Solver, EnvSolver):
                 action_data = self.process_action_data(env.get_action_data())
 
                 dec_data = self.input_adapter.dec_2_vec(block_data, space_data, pblock_data, action_data)
-                dec_data = tuple(torch.from_numpy(data).unsqueeze(0) for data in dec_data)
+                dec_data = tuple(torch.as_tensor(data).unsqueeze(0) for data in dec_data)
 
                 output = self.model.decode(*enc_data, *dec_data)
 

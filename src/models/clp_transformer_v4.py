@@ -3,110 +3,142 @@ import torch.nn as nn
 from models.base.mlp_encoder import MLPEncoder
 from models.base.transformer import Transformer
 
-
 class CLPTransformer(Transformer):
-    def __init__(self, block_dim, space_dim, d_model=256, nhead=8, num_layers=3, ff_dim_multiplier=4, dropout=0.1):
-        # Eliminamos placed_dim del constructor y pasamos space_dim tanto para space como para placed
+    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3, ff_dim_multiplier=3, dropout=0.1):
+        # Mantenemos el super por compatibilidad, aunque internamente ignoramos las dimensiones sobrantes
         super().__init__(
-            block_dim=block_dim, 
-            space_dim=space_dim,
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
-            ff_dim_multiplier=ff_dim_multiplier,
-            dropout=dropout
+            block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
+            d_model=d_model, nhead=nhead, num_layers=num_layers,
+            ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
         self.d_model = d_model
+        self.num_layers = num_layers
 
-        # 1. Proyecciones base
+        # ======================================================
+        # --- 1. RUTA DEL ENCODER (CATÁLOGO / INVENTARIO) ---
+        # ======================================================
         self.block_proj = nn.Linear(block_dim, d_model)
-        
-        # Proyección lineal simple unificada para geometrías (space y placed)
-        self.geom_proj = nn.Linear(space_dim, d_model)
-        
-        # Mantenemos únicamente el encoder de bloques libres
         self.block_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout, num_layers)
+        
+        # Pooling de Inventario
+        self.inv_query_token = nn.Parameter(torch.randn(1, 1, d_model))
+        self.inv_pooling_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
+        self.summary_proj = nn.Linear(d_model, d_model)
+        self.summary_dropout = nn.Dropout(dropout)
+        self.norm_enrich = nn.LayerNorm(d_model)
 
-        # 2. Bloque de Self-Attention para las geometrías unificadas
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, 
-            nhead=nhead, 
-            dim_feedforward=d_model * ff_dim_multiplier, 
-            dropout=dropout,
-            activation='relu',
-            batch_first=True
+        # ======================================================
+        # --- 2. RUTA DE ACCIONES CANDIDATO (IZQUIERDA) ---
+        # ======================================================
+        # Proyección para métricas operacionales: [loss, cs] -> Entrada fija de dimensión 2
+        self.action_feat_proj = nn.Linear(action_dim, d_model)
+        
+        # MLP de Fusión para Query definitiva: Concatena block_emb (d_model) + action_feat_emb (d_model)
+        self.query_fusion_mlp = nn.Sequential(
+            nn.Linear(2 * d_model, d_model * ff_dim_multiplier),
+            nn.ReLU(),
+            nn.Linear(d_model * ff_dim_multiplier, d_model),
+            nn.Dropout(dropout)
         )
-        self.self_attention_block = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False)
 
-        # 3. Proyecciones para el Scaled Dot-Product final
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
+        # --- 3. RUTA DE ENTORNO: CONTENEDOR ENRIQUECIDO ---
+        self.placed_proj = nn.Linear(placed_dim, d_model)
+        
+        # Token único que representa el contenedor global
+        self.container_token = nn.Parameter(torch.randn(1, 1, d_model))
 
-        self.alpha = nn.Parameter(torch.tensor(1.0))
+        self.empty_token = nn.Parameter(torch.randn(1, 1, d_model))
+        
+        # Atención para que el contenedor recolecte información de los bloques
+        self.container_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
+        self.container_norm = nn.LayerNorm(d_model)
+
+        # --- 4. DECODER: Acciones atienden al Contenedor ---
+        self.cross_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
+        self.decoder_ff_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, d_model * ff_dim_multiplier),
+                nn.ReLU(),
+                nn.Linear(d_model * ff_dim_multiplier, d_model),
+                nn.Dropout(dropout)
+            )
+            for _ in range(num_layers)
+        ])
+        self.attn_dropout = nn.Dropout(dropout)
+        
+        self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        self.final_dec_norm = nn.LayerNorm(d_model)
+
+        # ======================================================
+        # --- 5. CABEZAL DE SALIDA (LOGITS DE ENERGÍA) ---
+        # ======================================================
+        self.energy_proj = nn.Linear(d_model, 1)
 
     def encode(self, block_features):
-        # Mantenemos el encoder tal como está
         B, N_blocks, _ = block_features.shape
+        block_padding_mask = torch.all(block_features == -1.0, dim=-1)
 
-        x = self.block_proj(block_features) # [B, N, d_model]
-        x = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
+        x = self.block_proj(block_features)
+        raw_memory = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
 
-        return (x, )
+        query = self.inv_query_token.expand(B, -1, -1)
+        inv_summary, _ = self.inv_pooling_attn(
+            query=query, key=raw_memory, value=raw_memory, key_padding_mask=block_padding_mask
+        )
+        contextual_modifier = self.summary_dropout(self.summary_proj(inv_summary))
+        enriched_memory = self.norm_enrich(raw_memory + contextual_modifier)
+        return enriched_memory,
 
-    def decode(self, memory, action_blocks, placed_features, space_features, vcs):
+    def decode(self, memory, action_blocks, placed_features, action_features):
         B = memory.shape[0]
+
+        # --- 1. RUTA IZQUIERDA: Preparar Acciones (Sin Self-Attention) ---
+        action_mask = (action_blocks != -1)
+        action_idx_clamped = action_blocks.clamp(min=0)
+        block_emb_action = torch.gather(memory, 1, action_idx_clamped.unsqueeze(-1).expand(-1, -1, self.d_model))
+        action_feat_emb = self.action_feat_proj(action_features)
         
-        # Aseguramos que space_features tenga la dimensión secuencial lista para la concatenación
-        if len(space_features.shape) == 2:
-            space_features = space_features.unsqueeze(1) # [B, 1, space_dim]
+        # queries base [B, Na, d_model]
+        queries = self.query_fusion_mlp(torch.cat([block_emb_action, action_feat_emb], dim=-1))
 
-        # --- CONCATENACIÓN PREVIA DE LAS GEOMETRÍAS CRUDAS ---
-        # Unificamos el espacio disponible con los bloques ya posicionados en el contenedor
-        combined_raw = torch.cat([space_features, placed_features], dim=1) # [B, 1 + N_placed, space_dim]
-
-        # --- PROYECCIÓN LINEAL SIMPLE ---
-        # Pasamos todo el conjunto geométrico de manera simultánea por la misma proyección
-        combined_features = self.geom_proj(combined_raw) # [B, 1 + N_placed, d_model]
-
-        # --- GESTIÓN DE MÁSCARAS DE PADDING ---
-        # Evaluamos las filas válidas (no nulas) en placed_features
-        placed_mask = (placed_features.sum(dim=-1) != 0) # [B, N_placed]
+        # --- 2. RUTA DERECHA: Contenedor Enriquecido ---
+        placed_mask = ~torch.all(placed_features == -1.0, dim=-1) # [B, Np]
+        placed_sequence = self.placed_proj(placed_features)
         
-        # El espacio (index 0) siempre se considera válido
-        space_mask = torch.ones((B, 1), dtype=torch.bool, device=placed_features.device)
-        combined_mask = torch.cat([space_mask, placed_mask], dim=1) # [B, 1 + N_placed]
-
-        # El Transformer de PyTorch requiere un booleano True en las posiciones que DEBEN ignorarse
-        src_key_padding_mask = ~combined_mask
-
-        # --- SELF ATTENTION ---
-        # Los elementos geométricos interactúan entre sí para capturar el estado del contenedor
-        enriched_features = self.self_attention_block(combined_features, src_key_padding_mask=src_key_padding_mask)
-
-        # --- EXTRACCIÓN DEL ESPACIO ENRIQUECIDO ---
-        # Extraemos el vector que corresponde al token del espacio (index 0)
-        enriched_space = enriched_features[:, 0:1, :] # [B, 1, d_model]
-
-        # --- EMBEDDINGS DE ACCIONES DESDE MEMORY ---
-        action_mask = action_blocks != -1 
-        action_idx = action_blocks.clamp(min=0)
-        action_emb = torch.gather(memory, 1, action_idx.unsqueeze(-1).expand(-1, -1, self.d_model)) # [B, Na, d_model]
-
-        # --- SCALED DOT PRODUCT ---
-        q = self.q_proj(enriched_space) # [B, 1, d_model]
-        k = self.k_proj(action_emb)      # [B, Na, d_model]
+        # INYECCIÓN: Crear el token de "vacío" y concatenarlo al inicio
+        empty_t = self.empty_token.expand(B, 1, -1)
+        placed_sequence = torch.cat([empty_t, placed_sequence], dim=1)
         
-        scores = torch.matmul(q, k.transpose(-1, -2)) / (self.d_model ** 0.5)
-        transformer_logits = scores.squeeze(1)
-
-        # ---------------------------------------------------
-        # NUEVO: INYECCIÓN DE LA HEURÍSTICA VCS COMO BIAS RESIDUAL
-        # ---------------------------------------------------
+        # Actualizar máscara: el nuevo token en la pos 0 debe ser False (no ignorar)
+        full_mask = torch.cat([torch.zeros(B, 1, device=placed_mask.device, dtype=torch.bool), ~placed_mask], dim=1)
         
-        final_logits = transformer_logits + (self.alpha * vcs)
+        # El contenedor (token único) atiende a todos los bloques (incluyendo el empty_token)
+        container = self.container_token.expand(B, -1, -1)
+        container_enriched, _ = self.container_attn(
+            query=container, 
+            key=placed_sequence, 
+            value=placed_sequence, 
+            key_padding_mask=full_mask
+        )
+        container_enriched = self.container_norm(container + container_enriched)
 
-        # Las acciones de relleno deben seguir siendo -inf (¡importante aplicar después del bias!)
-        action_mask = action_blocks != -1 
-        final_logits = final_logits.masked_fill(~action_mask, float('-inf'))
+        # --- 3. CROSS-ATTENTION: Acciones atienden al Contenedor ---
+        for i in range(self.num_layers):
+            normed_queries = self.dec_norm1_layers[i](queries)
+            # Acciones (Q) atienden al contenedor (K, V)
+            attn_output, _ = self.cross_attn_layers[i](
+                query=normed_queries, 
+                key=container_enriched, 
+                value=container_enriched
+            )
+            queries = queries + self.attn_dropout(attn_output)
 
-        return final_logits
+            normed_queries_2 = self.dec_norm2_layers[i](queries)
+            queries = queries + self.decoder_ff_layers[i](normed_queries_2)
+
+        logits = self.energy_proj(self.final_dec_norm(queries)).squeeze(-1)
+        return logits.masked_fill(~action_mask, -1e9)

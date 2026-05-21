@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import os
 from models.base.transformer import Transformer
-from data_preprocessing import load_data
+from data.preprocessing import load_data
 from torch.utils.data import DataLoader
 import torch
 from IPython.display import display
@@ -76,6 +76,19 @@ def get_preds(model: Transformer, data):
             preds.append(logits.squeeze())
     
     return np.array(preds)
+
+def get_logits(model: Transformer, data):
+    model.eval()
+    loader = DataLoader(data, batch_size=1) 
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    all_logits = []
+    with torch.no_grad():
+        for inputs, y_batch in loader:
+            inputs = [i for i in inputs]
+            logits = model(*inputs)
+            all_logits.append(logits.squeeze())
+    
+    return np.array(all_logits)
 
 def plot_ranking_frequencies(counters_dict):
     """

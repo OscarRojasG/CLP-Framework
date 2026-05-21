@@ -1,45 +1,41 @@
 from abc import ABC, abstractmethod
+from collections import defaultdict
 import torch.nn.functional as F
 import torch
 
-class EpochMetrics():
-    def __init__(self):
-        self.subset_metrics = {}
-
-    def add_value(self, subset_name, metric_cls, value):
-        if subset_name not in self.subset_metrics:
-            self.subset_metrics[subset_name] = {}
-        
-        if metric_cls not in self.subset_metrics[subset_name]:
-            self.subset_metrics[subset_name][metric_cls] = []
-            
-        self.subset_metrics[subset_name][metric_cls].append(value)
-
 class Metric(ABC):
-    def __init__(self, name, maximize=True):
+    def __init__(self, name: str, maximize: bool = True):
         self.name = name
         self.maximize = maximize
         self.reset()
 
     @abstractmethod
-    def reset(self):
-        pass
+    def reset(self): pass
 
     @abstractmethod
-    def step(self, logits, y):
-        pass
+    def step(self, logits, y): pass
 
     @abstractmethod
-    def _compute(self):
-        pass
+    def _compute(self): pass
 
     def compute(self):
-        value = self._compute()
+        val = self._compute()
         self.reset()
-        return value
+        return val
 
-    def format(self, value):
+    def format(self, value: float) -> str:
         return f"{value:.2f}"
+
+class EpochMetrics:
+    def __init__(self):
+        # Estructura: subset_name -> metric -> list[values]
+        self.subset_metrics = defaultdict(lambda: defaultdict(list))
+
+    def add_value(self, subset_name: str, metric: Metric, value: float):
+        self.subset_metrics[subset_name][metric].append(value)
+
+    def get_last_metric_value(self, subset_name: str, metric: Metric):
+        return self.subset_metrics[subset_name][metric][-1]
 
 class MeanRank(Metric):
     def __init__(self):
@@ -112,14 +108,19 @@ class CrossEntropyLoss(Metric):
         self.total_ce = 0
     
     def step(self, logits, y):
-        y = y / y.sum(dim=1, keepdim=True)
-        ce = torch.nn.functional.cross_entropy(logits, y)
         batch_size = y.size(0)
+
+        y = y / y.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        ce = F.cross_entropy(logits, y, reduction='mean')
+
         self.total_ce += ce.item() * batch_size 
         self.total_samples += batch_size
+        
         return ce
 
     def _compute(self):
+        if self.total_samples == 0:
+            return 0.0
         return self.total_ce / self.total_samples
     
     def format(self, value):
@@ -267,3 +268,40 @@ class ExpMAE(Metric):
     
     def format(self, value):
         return f"{value:.4f}"
+    
+class ValidActionAccuracy(Metric):
+    def __init__(self):
+        # Nombramos la métrica para identificarla en los logs de entrenamiento/validación
+        super().__init__("Valid Action Accuracy")
+
+    def reset(self):
+        self.total_correct = 0
+        self.total_samples = 0
+    
+    def step(self, logits, y):
+        # logits: [Batch_Size, Max_Actions] -> Predicciones crudas del modelo
+        # y: [Batch_Size, Max_Actions] -> Distribución de probabilidades (targets suaves)
+        batch_size = y.size(0)
+        
+        # 1. Obtenemos el índice de la acción que el modelo decidió escoger (el valor más alto)
+        model_choices = logits.argmax(dim=-1) # [Batch_Size]
+        
+        # 2. Extraemos el valor que tenía el target real en las posiciones elegidas por el modelo
+        # Arange genera los índices de las filas del batch para extraer el elemento correcto por cada muestra
+        row_indices = torch.arange(batch_size, device=y.device)
+        chosen_target_values = y[row_indices, model_choices] # [Batch_Size]
+        
+        # 3. Una muestra es correcta si el valor en el target real es estrictamente mayor que cero
+        correct = chosen_target_values > 0.0 # Tensor booleano [Batch_Size]
+        
+        # 4. Acumulamos los resultados del batch actual
+        self.total_correct += correct.sum().item()
+        self.total_samples += batch_size
+
+    def _compute(self):
+        if self.total_samples == 0:
+            return 0.0
+        return 100 * self.total_correct / self.total_samples
+    
+    def format(self, value):
+        return f"{value:.2f}%"

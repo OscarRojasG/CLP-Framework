@@ -7,54 +7,6 @@ import h5py
 from collections import defaultdict
 from torch.utils.data import Dataset
 from settings import DATASETS_FOLDER, DATA_FOLDER
-
-
-'''
-class H5Dataset(Dataset):
-    def __init__(self, file_path, lazy):
-        self.file_path = file_path
-        self.name = os.path.basename(file_path)
-        self.file = None
-        
-        with h5py.File(self.file_path, "r") as f:
-            self.dataset_len = len(f["Y"])
-            self.label_type = f["Y"].attrs["label_type"] if "label_type" in f["Y"].attrs else LabelType.BEST_ACTION
-        
-        if not lazy:
-            self._open_file()
-
-    def _open_file(self):
-        self.file = h5py.File(self.file_path, "r")
-        self.block_features = self.file["block_features"]
-        self.action_blocks = self.file["action_blocks"]
-        self.action_features = self.file["action_features"]
-        self.placed_blocks = self.file["placed_blocks"]
-        self.placed_features = self.file["placed_features"]
-        self.space_features = self.file["space_features"]
-        self.Y = self.file["Y"]
-        
-    def close(self):
-        if self.file is not None:
-            self.file.close()
-            self.file = None
-
-    def __len__(self):
-        return self.dataset_len
-
-    def __getitem__(self, idx):
-        if self.file is None:
-            self._open_file()
-            
-        return (
-            torch.from_numpy(self.block_features[idx]),
-            torch.from_numpy(self.action_blocks[idx]),
-            torch.from_numpy(self.action_features[idx]),
-            torch.from_numpy(self.placed_blocks[idx]),
-            torch.from_numpy(self.placed_features[idx]),
-            torch.from_numpy(self.space_features[idx]),
-            torch.tensor(self.Y[idx])
-        )
-'''
     
 
 class H5Dataset(Dataset):
@@ -149,68 +101,121 @@ def split_data(filename, start_cut, end_cut):
     return indices_in_range
 
 
-def generate_datasets(filenames, basename, cuts, max_size=None, seed=42):
+def generate_datasets(filenames, basename, cuts, max_size=None, seed=42, concatenate=False):
     random.seed(seed)
     np.random.seed(seed)
     os.makedirs(DATASETS_FOLDER, exist_ok=True)
     
     file_to_index = {fname: i for i, fname in enumerate(filenames)}
 
-    for j in range(len(cuts) - 1):
-        start_cut = cuts[j] if j == 0 else cuts[j] + 1
-        end_cut = cuts[j + 1]
-        print(f"Procesando corte: [{start_cut}, {end_cut}]")
+    # Variables para inicializar el archivo HDF5 único si se solicita concatenar
+    h5_file_ptr = None
+    input_order = None
+    output_order = None
 
-        all_candidate_indices = []
-        for filename in filenames:
-            matched_indices = split_data(filename, start_cut, end_cut)
-            for idx in matched_indices:
-                all_candidate_indices.append((file_to_index[filename], idx))
+    if concatenate:
+        output_filename = f"{basename}.data"
+        output_path = DATASETS_FOLDER / output_filename
+        h5_file_ptr = h5py.File(output_path, "w")
+        h5_file_ptr.create_group('input')
+        h5_file_ptr.create_group('output')
 
-        if max_size and len(all_candidate_indices) > max_size:
-            selected_indices = random.sample(all_candidate_indices, max_size)
-        else:
-            selected_indices = all_candidate_indices
+    try:
+        for j in range(len(cuts) - 1):
+            start_cut = cuts[j] if j == 0 else cuts[j] + 1
+            end_cut = cuts[j + 1]
+            print(f"Procesando corte: [{start_cut}, {end_cut}]")
 
-        if not selected_indices:
-            continue
+            all_candidate_indices = []
+            for filename in filenames:
+                matched_indices = split_data(filename, start_cut, end_cut)
+                for idx in matched_indices:
+                    all_candidate_indices.append((file_to_index[filename], idx))
 
-        indices_by_file = defaultdict(list)
-        for f_id, idx in selected_indices:
-            indices_by_file[f_id].append(idx)
+            if max_size and len(all_candidate_indices) > max_size:
+                selected_indices = random.sample(all_candidate_indices, max_size)
+            else:
+                selected_indices = all_candidate_indices
 
-        # Aquí acumularemos los bloques completos de arrays de cada archivo
-        chunks_dataset = defaultdict(list)
-        input_order = None
-        output_order = None
+            if not selected_indices:
+                continue
 
-        for f_id, indices in indices_by_file.items():
-            filename = filenames[f_id]
-            data = load_data(filename)
+            indices_by_file = defaultdict(list)
+            for f_id, idx in selected_indices:
+                indices_by_file[f_id].append(idx)
+
+            chunks_dataset = defaultdict(list)
+
+            for f_id, indices in indices_by_file.items():
+                filename = filenames[f_id]
+                data = load_data(filename)
+                
+                if input_order is None:
+                    input_order = data['_input_order']
+                    output_order = data['_output_order']
+                    if concatenate:
+                        h5_file_ptr['input'].attrs['key_order'] = input_order
+                        h5_file_ptr['output'].attrs['key_order'] = output_order
+                
+                data_keys = [f'input/{k}' for k in data['_input_order']] + \
+                            [f'output/{k}' for k in data['_output_order']] + \
+                            ['ranks']
+                
+                sorted_indices = sorted(indices)
+                for key in data_keys:
+                    chunks_dataset[key].append(data[key][sorted_indices])
+
+            # Unificamos el corte actual en memoria
+            current_dataset = {}
+            for key, arrays_list in chunks_dataset.items():
+                current_dataset[key] = np.concatenate(arrays_list, axis=0)
+
+            # GUARDADO ESTRATÉGICO
+            if concatenate:
+                # Escribimos directo al HDF5 global incrementalmente
+                for key, arr in current_dataset.items():
+                    if key in h5_file_ptr:
+                        # El dataset ya existe, lo agrandamos para recibir los nuevos datos
+                        dset = h5_file_ptr[key]
+                        old_size = dset.shape[0]
+                        new_size = old_size + arr.shape[0]
+                        dset.resize(new_size, axis=0)
+                        dset[old_size:new_size] = arr
+                    else:
+                        # Primera vez que vemos esta clave, creamos el dataset con capacidad ilimitada en axis=0
+                        maxshape = (None,) + arr.shape[1:]
+                        h5_file_ptr.create_dataset(key, data=arr, maxshape=maxshape, chunks=True)
+                
+                print(f"   -> Fragmento del corte [{start_cut}-{end_cut}] volcado a disco.")
+            else:
+                current_dataset['_input_order'] = input_order
+                current_dataset['_output_order'] = output_order
+                save_to_h5(current_dataset, basename, start_cut, end_cut)
+
+            # Forzamos liberación del corte actual de la RAM
+            del chunks_dataset
+            del current_dataset
+
+        if concatenate:
+            # 1. Obtenemos el tamaño real acumulado consultando el largo de un dataset (ej: 'ranks')
+            # Buscamos cualquier clave que esté guardada en la raíz del archivo HDF5
+            sample_length = 0
+            for key in h5_file_ptr.keys():
+                if isinstance(h5_file_ptr[key], h5py.Dataset):
+                    sample_length = len(h5_file_ptr[key])
+                    break
             
-            if input_order is None:
-                input_order = data['_input_order']
-                output_order = data['_output_order']
+            # Cerramos el puntero del archivo de forma segura
+            h5_file_ptr.close()
+            h5_file_ptr = None
             
-            data_keys = [f'input/{k}' for k in data['_input_order']] + \
-                        [f'output/{k}' for k in data['_output_order']] + \
-                        ['ranks']
-            
-            # Aprovechamos que YA son arrays de NumPy:
-            # Filtramos todas las filas deseadas de un solo golpe usando indexación avanzada
-            sorted_indices = sorted(indices)
-            for key in data_keys:
-                chunks_dataset[key].append(data[key][sorted_indices])
+            # 2. Imprimimos el path junto con el tamaño total consolidado
+            print(f" Dataset concatenado guardado exitosamente en: {output_path} (Tamaño {sample_length})")
 
-        # Concatenamos los sub-arrays de cada archivo en un único array final por clave
-        current_dataset = {}
-        for key, arrays_list in chunks_dataset.items():
-            current_dataset[key] = np.concatenate(arrays_list, axis=0)
-
-        current_dataset['_input_order'] = input_order
-        current_dataset['_output_order'] = output_order
-
-        save_to_h5(current_dataset, basename, start_cut, end_cut)
+    finally:
+        # Nos aseguramos de cerrar el archivo pase lo que pase
+        if h5_file_ptr is not None:
+            h5_file_ptr.close()
 
 
 def save_to_h5(data_dict, basename, start, end):

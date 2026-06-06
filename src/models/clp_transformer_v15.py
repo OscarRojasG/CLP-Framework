@@ -62,16 +62,13 @@ class CLPTransformer(Transformer):
 
         self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
         self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        
+        # Capa de normalización final dedicada requerida por el flujo Pre-LN 🚨
         self.final_dec_norm = nn.LayerNorm(d_model)
 
-        # --- 3. CABEZA MLP NO LINEAL PROFUNDA (REEMPLAZO DE LA PROYECCIÓN SIMPLE) 🚨 ---
-        # Procesa la concatenación [B, Na, 2 * d_model] para extraer interacciones complejas
-        self.score_mlp = nn.Sequential(
-            nn.Linear(2 * d_model, d_model),
-            nn.GELU(),                        # Activación no lineal suave para el espacio latente
-            nn.Dropout(dropout),              # Regularización intermedia en la cabeza de selección
-            nn.Linear(d_model, 1)             # Reducción final al escalar de score por acción
-        )
+        # 3. Proyecciones para el Scaled Dot-Product final
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
 
     def encode(self, block_features):
         B, N_blocks, _ = block_features.shape
@@ -121,9 +118,10 @@ class CLPTransformer(Transformer):
         dummy_mask = torch.zeros((B, 1), dtype=torch.bool, device=placed_features.device)
         key_padding_mask = torch.cat([dummy_mask, ~placed_mask], dim=1)
 
-        # --- Loop de Cross-Attention Contextual Profundo (Pre-LN) ---
+        # --- 3. LOOP DE CROSS-ATTENTION REFACTORIZADO A PRE-LN REAL 🚨 ---
         enriched_space = space_emb
         for i in range(self.num_layers):
+            # Paso 1: Normalización previa ANTES de la Multihead Cross-Attention
             normed_space_1 = self.dec_norm1_layers[i](enriched_space)
             
             attn_output, _ = self.cross_attn_layers[i](
@@ -132,15 +130,19 @@ class CLPTransformer(Transformer):
                 value=values,
                 key_padding_mask=key_padding_mask
             )
+            # Autopista residual limpia
             enriched_space = enriched_space + self.attn_dropout(attn_output)
 
+            # Paso 2: Normalización previa ANTES del bloque Feed-Forward
             normed_space_2 = self.dec_norm2_layers[i](enriched_space)
             ff_output = self.decoder_ff_layers[i](normed_space_2)
             
+            # Segunda autopista residual limpia
             enriched_space = enriched_space + ff_output
 
-        # Capa de normalización final dedicada (Asegura estabilidad Pre-LN)
-        enriched_space = self.final_dec_norm(enriched_space) # Shape: [B, 1, d_model]
+        # >> PASO FINAL OBLIGATORIO EN PRE-LN 🚨
+        # Estabiliza las activaciones acumuladas en el flujo residual antes de proyectar las queries
+        enriched_space = self.final_dec_norm(enriched_space)
 
         # 4. PROCESAMIENTO DE ACCIONES CANDIDATO
         action_mask = action_blocks != -1
@@ -151,22 +153,15 @@ class CLPTransformer(Transformer):
         action_extra = self.action_encoder(action_feat_proj)
 
         action_cat = torch.cat([block_emb_action, action_extra], dim=-1)
-        action_emb = self.final_action_proj(action_cat) # Shape: [B, Na, d_model]
+        action_emb = self.final_action_proj(action_cat)
 
-        # --- 5. FUSIÓN REFACTORIZADA CON CABEZA MLP NO LINEAL 🚨 ---
-        # Expandimos enriched_space a lo largo de las acciones candidatos -> [B, Na, d_model]
-        space_expanded = enriched_space.expand(-1, Na, -1)
+        # 5. SCALED DOT PRODUCT FINAL (CONSERVADO)
+        q = self.q_proj(enriched_space)
+        k = self.k_proj(action_emb)
 
-        # Concatenación estructural de los contextos -> [B, Na, 2 * d_model]
-        fused_context = torch.cat([space_expanded, action_emb], dim=-1)
+        scores = torch.matmul(q, k.transpose(-1, -2)) / (self.d_model ** 0.5)
+        logits = scores.squeeze(1)
 
-        # Pasamos el bloque completo por la secuencia MLP profunda -> [B, Na, 1]
-        scores = self.score_mlp(fused_context)
-
-        # Removemos la dimensión del escalar para volver al formato categórico -> [B, Na]
-        logits = scores.squeeze(-1)
-
-        # Máscara de seguridad rígida anti-padding de acciones
         logits = logits.masked_fill(~action_mask, float('-inf'))
 
         return logits

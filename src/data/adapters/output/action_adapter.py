@@ -10,8 +10,9 @@ class ActionAdapter(OutputAdapter):
         self.max_actions = max_actions
 
     def output_2_vec(self, actions: list[Action], selected_block: int, greedy: list):
-        # 1. Pre-asignar vector de ceros con el largo máximo
         y_vector = np.zeros(self.max_actions, dtype=np.int32)
-        y_vector[np.argmax(greedy)] = 1
+        for i, action in enumerate(actions):
+            if action.block_id == selected_block:
+                y_vector[i] = 1
         
         return (y_vector, )

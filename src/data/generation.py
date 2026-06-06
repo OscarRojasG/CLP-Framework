@@ -68,11 +68,13 @@ def read_output(filepath: str):
             yield blocks, actions, pblocks, space, selected_block, greedy
 
 
-def get_rank(greedy):
-    return np.argmax(greedy)
+def get_rank(actions, selected_block):
+    for i, action in enumerate(actions):
+        if action.block_id == selected_block:
+            return i
 
 
-def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions, random_one=True):
+def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min_actions, random_one=False):
     """
     Procesa un solo archivo de forma aislada. 
     Si 'random_one' es True, procesa toda la partida secuencialmente y al final
@@ -84,12 +86,15 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
     
     for blocks, actions, pblocks, space, selected_block, greedy in read_output(filepath):
         if len(blocks) < min_blocks:
-            # Si un archivo no cumple la condición de bloques, 
-            # descartamos lo que llevamos de este archivo.
             return [], [], []
         
         if len(actions) < min_actions:
             continue
+
+        rank = get_rank(actions, selected_block)
+        if rank >= 8: continue
+        actions = actions[:8]
+        greedy = greedy[:8]
 
         input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
         local_inputs.append(input_data)
@@ -97,7 +102,6 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
         output_data = output_adapter.output_2_vec(actions, selected_block, greedy)
         local_outputs.append(output_data)
 
-        rank = get_rank(greedy)
         local_ranks.append(rank)
         
     # 🚨 FILTRADO AL FINAL DE LA PARTIDA:

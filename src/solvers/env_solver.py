@@ -5,6 +5,14 @@ class EnvSolver():
     def process_block_data(self, data):
         return [Block(data[i:i+4]) for i in range(0, len(data), 4)]
     
+    def process_box_data(self, data):
+        return [Box(data[i:i+4]) for i in range(0, len(data), 4)]
+    
+    def process_boxes_per_block(self, data, block_data):
+        for i, boxes in enumerate(data):
+            for box, amount in boxes:
+                block_data[i].boxes[box] = amount
+    
     def process_pblock_data(self, data):
         return [PBlock(data[i:i+4]) for i in range(0, len(data), 4)]
     

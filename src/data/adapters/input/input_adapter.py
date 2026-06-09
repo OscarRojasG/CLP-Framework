@@ -8,16 +8,16 @@ class InputAdapter(DataAdapter):
         self.max_blocks = max_blocks
         self.max_pblocks = max_pblocks
 
-    def input_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
-        enc_data = self.enc_2_vec(blocks)
-        dec_data = self.dec_2_vec(blocks, space, pblocks, actions)
+    def input_2_vec(self, boxes: list[Box], blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
+        enc_data = self.enc_2_vec(boxes, blocks)
+        dec_data = self.dec_2_vec(boxes, blocks, space, pblocks, actions)
 
         return (*enc_data, *dec_data)
     
     @abstractmethod
-    def enc_2_vec(self, blocks: list[Block]):
+    def enc_2_vec(self, boxes: list[Box], blocks: list[Block]):
         pass
     
     @abstractmethod
-    def dec_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
+    def dec_2_vec(self, boxes: list[Box], blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
         pass

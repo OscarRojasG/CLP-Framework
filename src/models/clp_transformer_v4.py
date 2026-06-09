@@ -1,24 +1,47 @@
 import torch
 import torch.nn as nn
 from models.base.mlp_encoder import MLPEncoder
-from models.base.transformer import Transformer
+from abc import ABC, abstractmethod
+
+class Transformer(nn.Module, ABC):
+    def __init__(self, **hyperparams):
+        torch.manual_seed(42)
+        super(Transformer, self).__init__()
+        self.hyperparams = hyperparams
+        self.biased = False
+    
+    @abstractmethod
+    def encode(self, *args):
+        pass
+
+    @abstractmethod
+    def decode(self, *args):
+        pass
+
+    def forward(self, block_features, box_features, total_boxes, boxes_per_block, *args):
+        enc_data = self.encode(block_features, box_features, total_boxes, boxes_per_block)
+        return self.decode(*enc_data, *args)
+
 
 class CLPTransformer(Transformer):
-    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3, ff_dim_multiplier=3, dropout=0.1):
+    def __init__(self, box_dim, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3, ff_dim_multiplier=3, dropout=0.1):
         # Mantenemos el super por compatibilidad, aunque internamente ignoramos las dimensiones sobrantes
         super().__init__(
-            block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
+            box_dim=box_dim, block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
             d_model=d_model, nhead=nhead, num_layers=num_layers,
             ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
         self.d_model = d_model
         self.num_layers = num_layers
+        self.max_boxes = 30
 
         # ======================================================
         # --- 1. RUTA DEL ENCODER (CATÁLOGO / INVENTARIO) ---
         # ======================================================
         self.block_proj = nn.Linear(block_dim, d_model)
         self.block_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout, num_layers)
+
+        self.box_proj = nn.Linear(box_dim, d_model)
         
         # Pooling de Inventario
         self.inv_query_token = nn.Parameter(torch.randn(1, 1, d_model))
@@ -33,9 +56,16 @@ class CLPTransformer(Transformer):
         # Proyección para métricas operacionales: [loss, cs] -> Entrada fija de dimensión 2
         self.action_feat_proj = nn.Linear(action_dim, d_model)
         
-        # MLP de Fusión para Query definitiva: Concatena block_emb (d_model) + action_feat_emb (d_model)
+        # Fusión de contexto global (suma de inventarios)
+        self.context_fusion_mlp = nn.Sequential(
+            nn.Linear(2 * d_model, d_model), # Fusiona block_inv y box_inv
+            nn.ReLU(),
+            nn.LayerNorm(d_model)
+        )
+        
+        # La fusión de acciones se mantiene, pero ahora recibirá bloques ya "enriquecidos"
         self.query_fusion_mlp = nn.Sequential(
-            nn.Linear(2 * d_model, d_model * ff_dim_multiplier),
+            nn.Linear(3 * d_model, d_model * ff_dim_multiplier),
             nn.ReLU(),
             nn.Linear(d_model * ff_dim_multiplier, d_model),
             nn.Dropout(dropout)
@@ -78,37 +108,75 @@ class CLPTransformer(Transformer):
         # ======================================================
         self.energy_proj = nn.Linear(d_model, 1)
 
-        # --- NUEVO: Autocalibración competitiva de acciones candidatos ---
-        self.action_self_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
-        self.action_self_norm = nn.LayerNorm(d_model)
-        self.action_self_dropout = nn.Dropout(dropout)
-
-    def encode(self, block_features):
+    def encode(self, block_features, box_features, total_boxes, boxes_per_block):
         B, N_blocks, _ = block_features.shape
+        
+        # 1. Proyección de Bloques
         block_padding_mask = torch.all(block_features == -1.0, dim=-1)
-
-        x = self.block_proj(block_features)
-        raw_memory = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
-
+        x = self.block_proj(block_features) # [B, N_blocks, d_model]
+    
+        # 2. Proyección de Cajas
+        box_memory = self.box_proj(box_features) # [B, N_boxes, d_model]
+    
+        # 3. Operación de agregación local (boxes_per_block)
+        box_contribution = torch.matmul(boxes_per_block.float(), box_memory)
+        x = x + box_contribution
+    
+        # --- NUEVO: 4. Operación de agregación global (box_inv) ---
+        # Convertimos a 0 los valores de padding (-1) antes de operar
+        clean_total = total_boxes.clamp(min=0).float() # [B, N_boxes]
+        
+        # [B, 1, N_boxes] @ [B, N_boxes, d_model] -> [B, 1, d_model]
+        box_inv = torch.matmul(clean_total.unsqueeze(1), box_memory)
+    
+        # 5. Resto del flujo (Encoder + Pooling)
+        block_memory = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
+    
         query = self.inv_query_token.expand(B, -1, -1)
-        inv_summary, _ = self.inv_pooling_attn(
-            query=query, key=raw_memory, value=raw_memory, key_padding_mask=block_padding_mask
+        block_inv, _ = self.inv_pooling_attn(
+            query=query, key=block_memory, value=block_memory, key_padding_mask=block_padding_mask
         )
-        contextual_modifier = self.summary_dropout(self.summary_proj(inv_summary))
-        enriched_memory = self.norm_enrich(raw_memory + contextual_modifier)
-        return enriched_memory,
+        
+        # Retornamos el estado de los bloques enriquecido + el inventario global
+        return block_memory, box_memory, block_inv, box_inv, boxes_per_block
 
-    def decode(self, memory, action_blocks, placed_features, action_features):
-        B = memory.shape[0]
+    def decode(self, block_memory, box_memory, block_inv, box_inv, boxes_per_block, action_blocks, action_features, placed_blocks, placed_features):
+        B = block_memory.shape[0]
 
-        # --- 1. RUTA IZQUIERDA: Preparar Acciones (Sin Self-Attention) ---
+        # 2. Identificamos qué bloques están colocados
+        placed_mask = (placed_blocks != -1).float() # [B, N_pblocks]
+        
+        # 3. Recopilamos las cajas de los bloques colocados
+        # gather_indices: [B, N_pblocks, N_boxes]
+        gather_indices = placed_blocks.clamp(min=0).unsqueeze(-1).expand(-1, -1, self.max_boxes)
+        # placed_quantities: [B, N_pblocks, N_boxes]
+        placed_quantities = torch.gather(boxes_per_block, 1, gather_indices)
+        
+        # 4. Sumamos las cantidades (aplicando máscara para ignorar el padding de placed_blocks)
+        # total_consumed_per_box: [B, N_boxes]
+        total_consumed_per_box = (placed_quantities * placed_mask.unsqueeze(-1)).sum(dim=1)
+        
+        # 5. Calculamos el embedding de lo consumido y restamos
+        # consumed_emb: [B, d_model]
+        consumed_emb = torch.matmul(total_consumed_per_box.unsqueeze(1).float(), box_memory)
+        box_inv = box_inv - consumed_emb # [B, 1, d_model]
+
+        # Contexto
+        global_context = self.context_fusion_mlp(torch.cat([block_inv, box_inv], dim=-1))
+        global_context_expanded = global_context.expand(-1, action_blocks.size(1), -1)
+
+        # --- Corrección en el método decode ---
+        # 1. Primero calcula los embeddings necesarios
         action_mask = (action_blocks != -1)
         action_idx_clamped = action_blocks.clamp(min=0)
-        block_emb_action = torch.gather(memory, 1, action_idx_clamped.unsqueeze(-1).expand(-1, -1, self.d_model))
+        block_emb_action = torch.gather(block_memory, 1, action_idx_clamped.unsqueeze(-1).expand(-1, -1, self.d_model))
         action_feat_emb = self.action_feat_proj(action_features)
         
-        # queries base [B, Na, d_model]
-        queries = self.query_fusion_mlp(torch.cat([block_emb_action, action_feat_emb], dim=-1))
+        # 2. Ahora sí puedes concatenar los 3 pilares correctamente
+        combined_features = torch.cat([block_emb_action, action_feat_emb, global_context_expanded], dim=-1)
+        
+        # 3. Y finalmente pasarlo por la MLP de fusión
+        queries = self.query_fusion_mlp(combined_features)
 
         # --- 2. RUTA DERECHA: Contenedor Enriquecido ---
         placed_mask = ~torch.all(placed_features == -1.0, dim=-1) # [B, Np]

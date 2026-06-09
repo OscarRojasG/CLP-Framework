@@ -15,6 +15,7 @@ def read_output(filepath: str):
         lines = [line.strip() for line in f if line.strip()]
         
     it = iter(lines)
+    boxes = []
     blocks = []
 
     # 2. Leer los BLOCKS una sola vez al principio
@@ -22,8 +23,14 @@ def read_output(filepath: str):
         if line == "% volume utilization":
             final_volume = float(next(it))
             #print(final_volume)
-
-        if line == "BLOCKS":
+            
+        if line == "BOXES":
+            # Leemos las cajas hasta encontrar "BLOCKS"
+            for l in it:
+                if l == "BLOCKS":
+                    break
+                boxes.append(Box(list(map(float, l.split()))))
+                
             for l in it:
                 if l == "SOLVE STEPS":
                     break
@@ -69,7 +76,7 @@ def read_output(filepath: str):
             # --- Volumen actual ---
             volume = float(next(it))
             
-            yield blocks, actions, pblocks, space, selected_block, greedy, final_volume
+            yield boxes, blocks, actions, pblocks, space, selected_block, greedy, final_volume
 
 
 def get_rank(actions, greedy):
@@ -86,7 +93,7 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
     local_outputs = []
     local_ranks = []
     
-    for blocks, actions, pblocks, space, selected_block, greedy, final_volume in read_output(filepath):
+    for boxes, blocks, actions, pblocks, space, selected_block, greedy, final_volume in read_output(filepath):
         if len(blocks) < min_blocks:
             # Si un archivo no cumple la condición de bloques, 
             # descartamos lo que llevamos de este archivo.
@@ -102,7 +109,7 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
         actions = actions[:max_actions]
         greedy = greedy[:max_actions]
 
-        input_data = input_adapter.input_2_vec(blocks, space, pblocks, actions)
+        input_data = input_adapter.input_2_vec(boxes, blocks, space, pblocks, actions)
         local_inputs.append(input_data)
 
         output_data = output_adapter.output_2_vec(actions, selected_block, greedy)

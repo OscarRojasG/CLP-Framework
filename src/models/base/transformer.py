@@ -17,6 +17,6 @@ class Transformer(nn.Module, ABC):
     def decode(self, *args):
         pass
 
-    def forward(self, block_data, *args):
-        enc_data = self.encode(block_data)
+    def forward(self, box_features, total_boxes, boxes_per_block, *args):
+        enc_data = self.encode(box_features, total_boxes, boxes_per_block)
         return self.decode(*enc_data, *args)

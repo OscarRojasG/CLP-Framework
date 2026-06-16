@@ -22,6 +22,10 @@ class Metric(ABC):
         val = self._compute()
         self.reset()
         return val
+    
+    def calc(self, logits, y):
+        self.step(logits, y)
+        return self.compute()
 
     def format(self, value: float) -> str:
         return f"{value:.2f}"

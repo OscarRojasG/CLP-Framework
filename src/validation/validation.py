@@ -5,10 +5,11 @@ import numpy as np
 import pandas as pd
 import os
 from models.base.transformer import Transformer
-from data.preprocessing import load_data
+from data.preprocessing import load_dataset
 from torch.utils.data import DataLoader
 import torch
 from IPython.display import display
+import numpy as np
 
 def get_vcs_ranking_frequencies(filename: str):
     data = load_data(filename)
@@ -30,39 +31,95 @@ def get_vcs_ranking_frequencies(filename: str):
 
     return arr_counter
 
-def get_model_ranking_frequencies(model: Transformer, filename: str):
-    data = load_data(filename)
+def vcs_comparison(model, filename, metrics, num_actions, cuts):
+    data = load_dataset(filename)
 
-    preds = get_preds(model, data)
-    y = np.array(data.Y)
+    data._open_file()
+    try:
+        ranks = data.file['ranks'][:]
+    finally:
+        data.close()
 
-    counter = {}
+    # Guardamos el total de muestras para calcular porcentajes luego
+    total_samples = len(ranks)
+
+    # 1. Generación de predicciones globales
+    y = np.eye(num_actions)[ranks]
+
+    preds_vcs = np.zeros((total_samples, num_actions), dtype=int)
+    preds_vcs[:] = np.arange(num_actions, 0, -1)
+
+    preds_model = get_logits(model, data)
+    
+    # 2. Definir los grupos de índices a evaluar
+    ranges = {'Global': np.arange(total_samples)}
+    
+    for min_r, max_r in cuts:
+        real_min = min_r - 1
+        real_max = max_r - 1
         
-    for i in range(len(preds)):
-        # Ordenar los índices de las predicciones del modelo de mejor a peor
-        # argsort de -preds nos da los índices en orden descendente
-        model_sorted_indices = np.argsort(-preds[i])
-        
-        # Encontrar el valor máximo del experto
-        max_y_val = np.max(y[i])
-        # Encontrar la posición (índice original) de la mejor acción según el experto
-        best_action_idx = np.where(y[i] == max_y_val)[0][0]
-        
-        # Ver en qué posición del ranking del modelo quedó esa acción experta
-        # Buscamos el índice original dentro del ranking ordenado por el modelo
-        pos_in_model = np.where(model_sorted_indices == best_action_idx)[0][0]
-        
-        # Guardar en el diccionario
-        counter[pos_in_model] = counter.get(pos_in_model, 0) + 1
+        mask = (ranks >= real_min) & (ranks <= real_max)
+        ranges[f'[{min_r}, {max_r}]'] = np.where(mask)[0]
 
-    # Generar el arreglo de frecuencias acumuladas
-    if not counter:
-        return []
+    results = []
 
-    max_pos = max(counter.keys())
-    arr_counter = [counter.get(i, 0) for i in range(max_pos + 1)]
+    # 3. Iterar sobre cada rango
+    for range_name, indices in ranges.items():
+        
+        # Calcular el porcentaje que representa este subconjunto
+        data_percent = (len(indices) / total_samples) * 100
+        
+        if len(indices) == 0:
+            for metric in metrics:
+                results.append({
+                    'Range': range_name, 
+                    'Data (%)': data_percent,  # Añadimos la columna
+                    'Metric': metric.name, 
+                    'model': np.nan, 
+                    'vcs': np.nan
+                })
+            continue
+            
+        y_sub = y[indices]
+        preds_model_sub = preds_model[indices]
+        preds_vcs_sub = preds_vcs[indices]
+        
+        y_tensor = torch.tensor(y_sub)
+        preds_m_tensor = torch.tensor(preds_model_sub).float()
+        preds_v_tensor = torch.tensor(preds_vcs_sub).float()
 
-    return arr_counter
+        # Calcular métricas
+        for metric in metrics:
+            model_eval = metric.calc(preds_m_tensor, y_tensor)
+            vcs_eval = metric.calc(preds_v_tensor, y_tensor)
+
+            results.append({
+                'Range': range_name,
+                'Data (%)': data_percent,  # Añadimos la columna
+                'Metric': metric.name,
+                'model': model_eval,
+                'vcs': vcs_eval
+            })
+
+    # 4. Construcción del DataFrame final
+    df = pd.DataFrame(results)
+    
+    # Redondeamos las métricas a 4 decimales y el porcentaje a 2
+    df[['model', 'vcs']] = df[['model', 'vcs']].astype(float).round(4)
+    df['Data (%)'] = df['Data (%)'].round(2)
+
+    return df
+
+def data_summary(filename, num_actions):
+    data = load_dataset(filename)
+
+    data._open_file()
+    try:
+        ranks = data.file['ranks'][:]
+    finally:
+        data.close()
+
+    return ranks
 
 def get_preds(model: Transformer, data):
     model.eval()

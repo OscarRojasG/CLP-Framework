@@ -1,11 +1,76 @@
 import torch
 import torch.nn as nn
-from models.base.mlp_encoder import MLPEncoder
 from models.base.transformer import Transformer
+import torch
+import torch.nn as nn
+
+class InventoryAttentionBlock(nn.Module):
+    def __init__(self, d_model, nhead, ff_dim_multiplier, dropout):
+        super().__init__()
+        
+        # ==========================================================
+        # PASO 1 (Izquierda): Inventario -> Lee Bloques
+        # ==========================================================
+        self.cross_attn_inv = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.norm_inv = nn.LayerNorm(d_model)
+
+        # ==========================================================
+        # PASO 2 (Derecha): Bloques -> Leen Inventario -> MLP
+        # ==========================================================
+        self.cross_attn_blocks = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.norm1_blocks = nn.LayerNorm(d_model)
+        
+        self.mlp_blocks = nn.Sequential(
+            nn.Linear(d_model, d_model * ff_dim_multiplier),
+            nn.ReLU(),
+            nn.Linear(d_model * ff_dim_multiplier, d_model),
+            nn.Dropout(dropout)
+        )
+        self.norm2_blocks = nn.LayerNorm(d_model)
+
+    def forward(self, x_blocks, x_inv, block_padding_mask=None):
+        """
+        x_blocks: (Batch, N_blocks, d_model)
+        x_inv: (Batch, 1, d_model)
+        block_padding_mask: Máscara booleana (Batch, N_blocks). True indica padding/inválido.
+        """
+        
+        # ---------------------------------------------------------
+        # FASE 1: El token de inventario absorbe el estado global
+        # ---------------------------------------------------------
+        # Q = Inventario, K = V = Bloques
+        # CRÍTICO: Usamos 'key_padding_mask' para evitar que el resumen 
+        # absorba ruido matemático de los elementos ignorados.
+        attn_inv_out, _ = self.cross_attn_inv(
+            query=x_inv, 
+            key=x_blocks, 
+            value=x_blocks,
+            key_padding_mask=block_padding_mask
+        )
+        # El token ahora contiene el resumen exacto de ESTE estado
+        x_inv = self.norm_inv(x_inv + attn_inv_out)
+
+        # ---------------------------------------------------------
+        # FASE 2: Los bloques se actualizan usando el estado global
+        # ---------------------------------------------------------
+        # Q = Bloques, K = V = Inventario
+        # Como el inventario es un solo token válido (no tiene padding), 
+        # no necesitamos pasar la máscara aquí.
+        attn_blocks_out, _ = self.cross_attn_blocks(
+            query=x_blocks, 
+            key=x_inv, 
+            value=x_inv
+        )
+        x_blocks = self.norm1_blocks(x_blocks + attn_blocks_out)
+        
+        # Procesamiento individual (Feed Forward)
+        mlp_out = self.mlp_blocks(x_blocks)
+        x_blocks = self.norm2_blocks(x_blocks + mlp_out)
+
+        return x_blocks, x_inv
 
 class CLPTransformer(Transformer):
     def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3, ff_dim_multiplier=3, dropout=0.1):
-        # Mantenemos el super por compatibilidad, aunque internamente ignoramos las dimensiones sobrantes
         super().__init__(
             block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
             d_model=d_model, nhead=nhead, num_layers=num_layers,
@@ -17,15 +82,17 @@ class CLPTransformer(Transformer):
         # ======================================================
         # --- 1. RUTA DEL ENCODER (CATÁLOGO / INVENTARIO) ---
         # ======================================================
+        # Equivale a la caja inferior "Linear" en tu diagrama
         self.block_proj = nn.Linear(block_dim, d_model)
-        self.block_encoder = MLPEncoder(d_model, ff_dim_multiplier, dropout, num_layers)
         
-        # Pooling de Inventario
+        # Token latente inicial (Inventory Token)
         self.inv_query_token = nn.Parameter(torch.randn(1, 1, d_model))
-        self.inv_pooling_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
-        self.summary_proj = nn.Linear(d_model, d_model)
-        self.summary_dropout = nn.Dropout(dropout)
-        self.norm_enrich = nn.LayerNorm(d_model)
+        
+        # El bloque iterativo x N del diagrama
+        self.inventory_layers = nn.ModuleList([
+            InventoryAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
+            for _ in range(num_layers)
+        ])
 
         # ======================================================
         # --- 2. RUTA DE ACCIONES CANDIDATO (IZQUIERDA) ---
@@ -80,18 +147,21 @@ class CLPTransformer(Transformer):
 
     def encode(self, block_features):
         B, N_blocks, _ = block_features.shape
+        
+        # Calculamos la máscara internamente, tal como tenías en tu código original
         block_padding_mask = torch.all(block_features == -1.0, dim=-1)
+        
+        # 1. Proyección Lineal Inicial
+        x_blocks = self.block_proj(block_features)
 
-        x = self.block_proj(block_features)
-        raw_memory = self.block_encoder(x.view(-1, self.d_model)).view(B, N_blocks, self.d_model)
+        # 2. Inicializar el token de inventario latente
+        x_inv = self.inv_query_token.expand(B, -1, -1)
 
-        query = self.inv_query_token.expand(B, -1, -1)
-        inv_summary, _ = self.inv_pooling_attn(
-            query=query, key=raw_memory, value=raw_memory, key_padding_mask=block_padding_mask
-        )
-        contextual_modifier = self.summary_dropout(self.summary_proj(inv_summary))
-        enriched_memory = self.norm_enrich(raw_memory + contextual_modifier)
-        return enriched_memory,
+        # 3. Bucle iterativo (El Inventario lee -> Los Bloques leen)
+        for layer in self.inventory_layers:
+            x_blocks, x_inv = layer(x_blocks, x_inv, block_padding_mask)
+        
+        return x_blocks,
 
     def decode(self, memory, action_blocks, action_features, placed_features):
         B = memory.shape[0]

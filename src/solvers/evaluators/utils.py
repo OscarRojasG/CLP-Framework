@@ -1,14 +1,17 @@
 from IPython.display import clear_output
 import pandas as pd
 
-def print_progress_table(current_inst: int, solver_data: dict):
-    clear_output(wait=True)
+def print_progress_table(solver_data: dict, total_inst: int, is_final: bool = False):
+    # El truco: si es la última ejecución, wait=False borra de inmediato 
+    # y rompe el ciclo de reemplazo para que el DataFrame no la borre.
+    clear_output(wait=not is_final)
+    
     solvers = list(solver_data.keys())
     if not solvers: return
     
-    # Detectamos las métricas (ej: 'Vol', 'Time')
     metrics = list(solver_data[solvers[0]].keys())
-    header = f"{'Solver':<15} | {'Instancia':<10}"
+    
+    header = f"{'Solver':<15} | {'Progreso':<10}"
     for m in metrics:
         header += f" | {('Avg ' + m):<12}"
     
@@ -16,11 +19,18 @@ def print_progress_table(current_inst: int, solver_data: dict):
     print("-" * len(header))
     
     for name, data in solver_data.items():
-        row = f"{name:<15} | {current_inst:<10}"
+        completadas = len(data[metrics[0]]) if metrics else 0
+        row = f"{str(name):<15} | {f'{completadas}/{total_inst}':<10}"
+        
         for m in metrics:
-            # Calculamos el promedio de la lista de datos actual
-            avg_val = sum(data[m]) / current_inst
+            if completadas > 0:
+                valores = [val for inst_id, val in data[m]]
+                avg_val = sum(valores) / completadas
+            else:
+                avg_val = 0.0
+                
             row += f" | {avg_val:<12.2f}"
+            
         print(row)
 
 def stats_to_df(solver_stats: dict, instances: list):

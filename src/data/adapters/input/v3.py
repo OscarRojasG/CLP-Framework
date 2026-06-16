@@ -2,14 +2,14 @@ import numpy as np
 from data.objects import *
 from data.adapters.input.input_adapter import InputAdapter
 
-class InputAdapterV2(InputAdapter):
+class InputAdapterV3(InputAdapter):
     def __init__(self, max_blocks: int, max_pblocks: int, max_actions: int):
         # Actualizamos el diccionario del constructor con las nuevas llaves semánticas
         super().__init__({
             "block_features": np.float32,
-            "action_blocks": np.int32,
             "action_features": np.float32,
-            "placed_features": np.float32
+            "placed_coords": np.float32,
+            "space_features": np.float32
         }, max_blocks, max_pblocks)
         self.max_actions = max_actions
     
@@ -23,10 +23,11 @@ class InputAdapterV2(InputAdapter):
     
     def dec_2_vec(self, blocks: list[Block], space: Space, pblocks: list[PBlock], actions: list[Action]):
         action_blocks = np.full((self.max_actions,), -1, dtype=np.int32)
-        action_features = np.full((self.max_actions, 2), -1, dtype=np.float32)
+        action_features = np.full((self.max_actions, 4), -1, dtype=np.float32)
+        space_features = np.array([space.l, space.w, space.h], dtype=np.float32)
         
         # El único tensor geométrico explícito: coordenadas relativas de lo que ya está construido
-        placed_features = np.full((self.max_pblocks, 6), -1, dtype=np.float32)
+        placed_coords = np.full((self.max_pblocks, 6), -1, dtype=np.float32)
 
         # 2. Entorno Relativo de Bloques Colocados
         n_pb = len(pblocks)
@@ -43,16 +44,17 @@ class InputAdapterV2(InputAdapter):
                 rel_y2 = (pb.y + block.w) - space.y
                 rel_z2 = (pb.z + block.h) - space.z
                 
-                placed_features[i] = [rel_x1, rel_y1, rel_z1, rel_x2, rel_y2, rel_z2]
+                placed_coords[i] = [rel_x1, rel_y1, rel_z1, rel_x2, rel_y2, rel_z2]
 
         # 1. Acciones Candidatas (Identidad + Desempeño)
         n_a = len(actions)
         action_blocks[:n_a] = [a.block_id for a in actions]
         for i, a in enumerate(actions[:n_a]):
-            action_features[i] = [a.loss if a.loss > 0 else 0, a.cs]
+            block = blocks[a.block_id]
+            action_features[i] = [a.loss, block.l, block.w, block.h]
 
         return (
-            action_blocks,
             action_features,
-            placed_features
+            placed_coords,
+            space_features
         )

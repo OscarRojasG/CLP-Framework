@@ -6,8 +6,8 @@ import numpy as np
 
 
 class BSM_VCS_Solver(BSMSolver, EnvSolver):
-    def __init__(self, model, input_adapter,w, min_fr):
-        BSMSolver.__init__(self, "BSGValuePredictor", BSM_VCS, w, min_fr)
+    def __init__(self, model, input_adapter, w, min_fr):
+        BSMSolver.__init__(self, "BSM-VCS", BSM_VCS, w, min_fr)
         self.model = model
         self.input_adapter = input_adapter
 

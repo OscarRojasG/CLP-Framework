@@ -1,8 +1,8 @@
 class Space:
     def __init__(self, data):
-        self.x = data[0]
-        self.y = data[1]
-        self.z = data[2]
-        self.l = data[3]
-        self.w = data[4]
-        self.h = data[5]
+        self.x = round(data[0] * 587) / 587
+        self.y = round(data[1] * 587) / 587
+        self.z = round(data[2] * 587) / 587
+        self.l = round(data[3] * 587) / 587
+        self.w = round(data[4] * 587) / 587
+        self.h = round(data[5] * 587) / 587

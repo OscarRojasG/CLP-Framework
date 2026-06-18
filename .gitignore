@@ -228,3 +228,4 @@ notebooks/testing
 !instances/benchmarks/
 !instances/benchmarks/**
 !src/*.so
+!src/envs/*

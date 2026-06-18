@@ -1,7 +1,12 @@
 from data.objects import *
 import plotly.graph_objects as go
+import torch
+import numpy as np
 
 class EnvSolver():
+    def __init__(self, inference_mode):
+        self.inference_mode = inference_mode
+        
     def process_block_data(self, data):
         return [Block(data[i:i+4]) for i in range(0, len(data), 4)]
     
@@ -31,6 +36,67 @@ class EnvSolver():
         for state in data_batch:
             data.append(Space(state))
         return data
+    
+    def get_enc_inputs(self, env, block_data_cache, device):
+        if self.inference_mode:
+            # Obtienes el tensor (N, F) desde C++
+            enc_numpy = env.get_enc_data() 
+            
+            # ¡AQUÍ ESTÁ EL CAMBIO! 
+            # Convertimos a tensor y añadimos el batch dim para tener [1, N, F]
+            return tuple(torch.from_numpy(data).unsqueeze(0).to(device) for data in enc_numpy)
+        else:
+            # Tu lógica original para modo Dev
+            enc_data = self.input_adapter.enc_2_vec(block_data_cache)
+            return tuple(torch.as_tensor(data).unsqueeze(0).to(device) for data in enc_data)
+    
+    def get_dec_inputs(self, env, block_data_cache, device):
+        if self.inference_mode:
+            # Obtenemos tensores 2D desde C++
+            dec_numpy = env.get_dec_data()
+            dec_tensors = tuple(torch.from_numpy(data).unsqueeze(0).to(device) for data in dec_numpy)
+            return dec_tensors, None 
+        else:
+            # Modo Dev: Pipeline original
+            space_data = self.process_space_data(env.get_space_data())
+            pblock_data = self.process_pblock_data(env.get_pblock_data())
+            action_data = self.process_action_data(env.get_action_data())
+
+            dec_data = self.input_adapter.dec_2_vec(block_data_cache, space_data, pblock_data, action_data)
+            dec_tensors = tuple(torch.as_tensor(data).unsqueeze(0).to(device) for data in dec_data)
+            return dec_tensors, action_data
+
+    def get_dec_inputs_batch(self, env, block_data_cache, device):
+        if self.inference_mode:
+            # Obtenemos tensores 3D directamente desde C++
+            dec_numpy = env.get_dec_data_batch()
+            dec_tensors = tuple(torch.from_numpy(data).to(device) for data in dec_numpy)
+            return dec_tensors, None
+        else:
+            # Modo Dev: Pipeline original con proceso de batches
+            space_data_batch = self.process_space_data_batch(env.get_space_data_batch())
+            pblock_data_batch = self.process_pblock_data_batch(env.get_pblock_data_batch())
+            action_data_batch = self.process_action_data_batch(env.get_action_data_batch())
+
+            # Empaquetado manual para el modo dev (respetando tu lógica original)
+            list_of_dec_tuples = [
+                self.input_adapter.dec_2_vec(block_data_cache, s, p, a)
+                for a, p, s in zip(action_data_batch, pblock_data_batch, space_data_batch)
+            ]
+            
+            dec_tensors = tuple(
+                torch.from_numpy(np.stack(componentes)).to(device)
+                for componentes in zip(*list_of_dec_tuples)
+            )
+            return dec_tensors, action_data_batch
+
+    def apply_transition(self, env, best_index, action_data_cache, dec_tensors):
+        if self.inference_mode:
+            encoder_index = dec_tensors[0][0, best_index].item()
+            env.transition(int(encoder_index))
+        else:
+            selected_block = action_data_cache[best_index].block_id
+            env.transition(selected_block)
     
     def _get_cube_mesh(self, x, y, z, l, w, h, color, name, opacity=1.0, is_wireframe=False):
         x_verts = [x,   x+l, x+l, x,   x,   x+l, x+l, x  ]

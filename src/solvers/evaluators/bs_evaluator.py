@@ -5,20 +5,37 @@ from collections import defaultdict
 from solvers.env_solver import EnvSolver
 import torch
 import os
+from collections import defaultdict
 
 def bs_eval(solver_list, instance_file, num_instances):
-    solver_stats = {s.name: {'Vol': [], 'Time': []} for s in solver_list}
+    # Usamos defaultdict para mayor seguridad
+    solver_stats = defaultdict(lambda: {'Vol': [], 'Time': []})
     instances = list(range(num_instances))
 
     for i in instances:
         for solver in solver_list:
-            vol, time = solver.solve(instance_file, i)
-            solver_stats[solver.name]['Vol'].append(vol)
-            solver_stats[solver.name]['Time'].append(time)
+            try:
+                vol, time = solver.solve(instance_file, i)
+                # Guardamos explícitamente el índice para evitar desajustes
+                solver_stats[solver.name]['Vol'].append((i, vol))
+                solver_stats[solver.name]['Time'].append((i, time))
+            except Exception as e:
+                print(f"Error en {solver.name} en instancia {i}: {e}")
+                # Opcional: rellenar con None o valores por defecto para mantener consistencia
+                solver_stats[solver.name]['Vol'].append((i, None))
+                solver_stats[solver.name]['Time'].append((i, None))
             
-        print_progress_table(i + 1, solver_stats)
+        print_progress_table(solver_stats, num_instances, is_final=(i == num_instances - 1)) # Asegúrate que tu función maneje dicts y no solo listas
         
-    return stats_to_df(solver_stats, instances)
+    # Limpieza: convertir a dict y ordenar (igual que en fast_eval)
+    final_stats = dict(solver_stats)
+    for name in final_stats:
+        final_stats[name]['Vol'].sort(key=lambda x: x[0])
+        final_stats[name]['Time'].sort(key=lambda x: x[0])
+        final_stats[name]['Vol'] = [val for idx, val in final_stats[name]['Vol']]
+        final_stats[name]['Time'] = [val for idx, val in final_stats[name]['Time']]
+        
+    return stats_to_df(final_stats, instances)
 
 global_solvers = []
 
@@ -79,14 +96,22 @@ def fast_eval(solvers_config, instance_file, num_instances, model_cls, model_nam
             solver_name, i, vol, time, error = futuro.result()
             
             if error:
-                print(f"[Error] Solver: {solver_name} | Instancia: {i} | Detalles: {error}")
-                raise
+                print(f"[Error CRÍTICO] Solver: {solver_name} | Instancia: {i} | Detalles: {error}")
+                
+                # 1. Cancelar todas las tareas que aún están en la cola esperando
+                for f in futuros:
+                    f.cancel()
+                
+                # 2. Forzar el apagado del executor sin esperar a los procesos vivos (Python 3.9+)
+                executor.shutdown(wait=False, cancel_futures=True)
+                
+                # 3. Lanzar la excepción explícitamente para romper la ejecución del main
+                raise RuntimeError(f"Ejecución abortada en {solver_name} (Instancia {i}): {error}")
+            
             else:
                 solver_stats[solver_name]['Vol'].append((i, vol))
                 solver_stats[solver_name]['Time'].append((i, time))
             
-            # --- EL CAMBIO ESTÁ AQUÍ ---
-            # Verificamos si es la última tarea de todas
             es_el_final = (count == len(tareas))
             print_progress_table(solver_stats, num_instances, is_final=es_el_final)
 

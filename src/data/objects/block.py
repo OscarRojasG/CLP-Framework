@@ -5,6 +5,11 @@ class Block:
         self.h = round(data[2] * 587) / 587
         self.n = round(data[3] * 587) / 587
 
+        self.l = data[0]
+        self.w = data[1]
+        self.h = data[2]
+        self.n = round(data[3] * 587) / 587
+
     def volume(self):
         return self.l * self.w * self.h
     

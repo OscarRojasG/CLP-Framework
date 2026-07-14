@@ -6,6 +6,8 @@ from solvers.env_solver import EnvSolver
 import torch
 import os
 from collections import defaultdict
+import pandas as pd
+from settings import EXPERIMENTS_FOLDER
 
 def bs_eval(solver_list, instance_file, num_instances):
     # Usamos defaultdict para mayor seguridad
@@ -71,8 +73,13 @@ def worker_task(solver_name, instance_file, i):
     except Exception as e:
         return (solver.name, i, None, None, str(e))
 
-def fast_eval(solvers_config, instance_file, num_instances, model_cls, model_name, adapter_config, num_workers=4):
+def fast_eval(solvers_config, instance_file, num_instances, model_cls, model_name, adapter_config, num_workers=4, backup_csv="respaldo_evaluacion.csv"):
     
+    # (Opcional) Limpiar el archivo de respaldo si existe de una ejecución anterior
+    backup_csv = EXPERIMENTS_FOLDER / backup_csv
+    if os.path.exists(backup_csv):
+        os.remove(backup_csv)
+        
     # 1. defaultdict crea la estructura {'Vol': [], 'Time': []} mágicamente la primera vez que ve una clave nueva
     solver_stats = defaultdict(lambda: {'Vol': [], 'Time': []})
     
@@ -96,22 +103,29 @@ def fast_eval(solvers_config, instance_file, num_instances, model_cls, model_nam
             solver_name, i, vol, time, error = futuro.result()
             
             if error:
-                print(f"[Error CRÍTICO] Solver: {solver_name} | Instancia: {i} | Detalles: {error}")
+                # Ya no abortamos. Imprimimos el error y registramos valores nulos.
+                print(f"[Advertencia] Solver: {solver_name} | Instancia: {i} | Falló con error: {error}")
                 
-                # 1. Cancelar todas las tareas que aún están en la cola esperando
-                for f in futuros:
-                    f.cancel()
-                
-                # 2. Forzar el apagado del executor sin esperar a los procesos vivos (Python 3.9+)
-                executor.shutdown(wait=False, cancel_futures=True)
-                
-                # 3. Lanzar la excepción explícitamente para romper la ejecución del main
-                raise RuntimeError(f"Ejecución abortada en {solver_name} (Instancia {i}): {error}")
-            
+                solver_stats[solver_name]['Vol'].append((i, None))
+                solver_stats[solver_name]['Time'].append((i, None))
             else:
                 solver_stats[solver_name]['Vol'].append((i, vol))
                 solver_stats[solver_name]['Time'].append((i, time))
             
+            # --- NUEVO: Guardar respaldo en CSV progresivamente ---
+            df_row = pd.DataFrame([{
+                'Solver': solver_name,
+                'Instancia': i,
+                'Vol': vol if not error else None,
+                'Time': time if not error else None,
+                'Error': str(error) if error else None
+            }])
+            
+            # header=True solo si el archivo aún no se ha creado
+            es_nuevo = not os.path.exists(backup_csv)
+            df_row.to_csv(backup_csv, mode='a', header=es_nuevo, index=False)
+            # ------------------------------------------------------
+
             es_el_final = (count == len(tareas))
             print_progress_table(solver_stats, num_instances, is_final=es_el_final)
 
@@ -119,9 +133,11 @@ def fast_eval(solvers_config, instance_file, num_instances, model_cls, model_nam
     solver_stats = dict(solver_stats)
 
     for name in solver_stats:
+        # Ordenamos por índice de instancia para que queden alineados
         solver_stats[name]['Vol'].sort(key=lambda x: x[0])
         solver_stats[name]['Time'].sort(key=lambda x: x[0])
         
+        # Extraemos solo los valores, descartando el índice
         solver_stats[name]['Vol'] = [val for idx, val in solver_stats[name]['Vol']]
         solver_stats[name]['Time'] = [val for idx, val in solver_stats[name]['Time']]
 

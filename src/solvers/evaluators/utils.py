@@ -19,13 +19,18 @@ def print_progress_table(solver_data: dict, total_inst: int, is_final: bool = Fa
     print("-" * len(header))
     
     for name, data in solver_data.items():
-        completadas = len(data[metrics[0]]) if metrics else 0
-        row = f"{str(name):<15} | {f'{completadas}/{total_inst}':<10}"
+        # Contamos el total de entradas registradas para el progreso
+        total_intentos = len(data[metrics[0]]) if metrics else 0
+        row = f"{str(name):<15} | {f'{total_intentos}/{total_inst}':<10}"
         
         for m in metrics:
-            if completadas > 0:
-                valores = [val for inst_id, val in data[m]]
-                avg_val = sum(valores) / completadas
+            # 1. Extraemos solo los valores válidos (no None)
+            valores_validos = [val for inst_id, val in data[m] if val is not None]
+            
+            # 2. Calculamos el promedio sobre la cantidad de valores encontrados
+            cantidad_valida = len(valores_validos)
+            if cantidad_valida > 0:
+                avg_val = sum(valores_validos) / cantidad_valida
             else:
                 avg_val = 0.0
                 

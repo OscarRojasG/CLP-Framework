@@ -1,10 +1,10 @@
-from solvers.bs.bsm_solver import BSMSolver
+from solvers.beam_search.bsm_solver import BSMSolver
 from solvers.env_solver import EnvSolver
 import torch
 
 
-class BSM_VCS_Solver(BSMSolver, EnvSolver):
-    def __init__(self, model, input_adapter, w, min_fr, inference_mode=False):
+class BSG_ModelVCS_Solver(BSMSolver, EnvSolver):
+    def __init__(self, model, input_adapter, w, min_fr, inference_mode=True):
         if inference_mode:
             from envs.bsm_engine_inf import BSM_VCS
         else:

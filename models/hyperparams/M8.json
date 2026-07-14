@@ -1,0 +1,10 @@
+{
+    "block_dim": 5,
+    "action_dim": 2,
+    "placed_dim": 6,
+    "d_model": 32,
+    "nhead": 4,
+    "num_layers": 2,
+    "ff_dim_multiplier": 2,
+    "dropout": 0.1
+}

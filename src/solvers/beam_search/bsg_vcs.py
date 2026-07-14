@@ -2,7 +2,7 @@ import subprocess
 from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
 from solvers.solver import Solver
 
-class BSG_Solver(Solver):
+class BSG_VCS_Solver(Solver):
     def __init__(self, w, min_fr):
         super().__init__("BSG", min_fr)
         self.w = w

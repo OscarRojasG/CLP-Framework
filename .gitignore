@@ -229,3 +229,11 @@ notebooks/testing
 !instances/benchmarks/**
 !src/*.so
 !src/envs/*
+
+!models/M1.pth
+!models/M8.pth
+!models/M15.pth
+!models/hyperparams
+!models/hyperparams/M1.json
+!models/hyperparams/M8.json
+!models/hyperparams/M15.json

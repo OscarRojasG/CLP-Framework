@@ -1,10 +1,10 @@
-from solvers.bs.bsm_solver import BSMSolver
+from solvers.beam_search.bsm_solver import BSMSolver
 from solvers.env_solver import EnvSolver
 import torch
 import numpy as np
 
-class BSM_GM_Solver(BSMSolver, EnvSolver):
-    def __init__(self, model, input_adapter, w, min_fr, inference_mode=False):
+class BSG_ModelFull_Solver(BSMSolver, EnvSolver):
+    def __init__(self, model, input_adapter, w, min_fr, inference_mode=True):
         # Seleccionamos dinámicamente la versión del entorno compilada
         if inference_mode:
             from envs.bsm_engine_inf import BSM_GM

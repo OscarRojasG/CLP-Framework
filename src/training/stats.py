@@ -2,6 +2,7 @@ import pandas as pd
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from settings import EXPERIMENTS_FOLDER
 
 def report_metric(metric_name, phase, filepath='experiment_logs.json'):
     """
@@ -160,7 +161,7 @@ def compare_train_val_loss(phase, filepath='experiment_logs.json'):
     Retorna un DataFrame que compara el Loss ponderado de entrenamiento (train)
     contra el Loss ponderado de validación (val) para cada época.
     """
-    with open(filepath, 'r') as f:
+    with open(EXPERIMENTS_FOLDER / filepath, 'r') as f:
         data = json.load(f)
 
     phase_key = f"phase_{phase}"
@@ -228,7 +229,7 @@ def plot_train_val_comparison(df, y_axis_name="Loss",title=None):
         return
 
     # Configuramos el tamaño de la figura
-    plt.figure(figsize=(6, 6))
+    plt.figure(figsize=(3.88, 3.5), dpi=300)
 
     # Graficamos la curva de entrenamiento (Train) si existe en el DataFrame
     if 'train_loss' in df.columns:

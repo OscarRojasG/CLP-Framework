@@ -1,15 +1,16 @@
 import subprocess
 from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
-from solvers.dse.dse_solver import DSE_Solver
+from solvers.solver import Solver
 
-class DSE_BSG_Solver(DSE_Solver):
-    def __init__(self):
-        super().__init__("DSE BSG")
+class BSG_VCS_Solver(Solver):
+    def __init__(self, w, min_fr):
+        super().__init__("BSG", min_fr)
+        self.w = w
         
-    def solve(self, instance_file, instance_number, min_fr, max_w) -> int:
+    def solve(self, instance_file, instance_number) -> int:
         # Ejecutar el proceso y capturar la salida
         proc = subprocess.run(
-            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-w", str(max_w), f"--min_fr={min_fr}", "--de"],
+            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-w", str(self.w), f"--min_fr={self.min_fr}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,

@@ -7,7 +7,7 @@ from solvers.env_solver import EnvSolver
 
 
 class GreedyModelSolver(Solver, EnvSolver): 
-    def __init__(self, model, input_adapter, w, min_fr, inference_mode=False):
+    def __init__(self, model, input_adapter, w, min_fr, inference_mode=True):
         Solver.__init__(self, "GreedyModel", min_fr)
         EnvSolver.__init__(self, inference_mode)
         self.model = model

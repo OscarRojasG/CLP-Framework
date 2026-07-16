@@ -1,7 +1,5 @@
 import copy
 import torch
-import torch.nn.functional as F
-import numpy as np
 from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from training.logging import save_experiment_config, save_phase_history
 from training.metrics import *
@@ -9,6 +7,15 @@ from settings import MODELS_FOLDER, HYPERPARAMETERS_FOLDER, EXPERIMENTS_FOLDER
 import os
 import json
 from collections import defaultdict
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from dataclasses import dataclass, asdict
+
+@dataclass
+class LRConfig:
+    start: float            # Tasa de aprendizaje inicial
+    factor: float = 0.5     # Factor de reducción
+    patience: int = 999999  # Épocas sin mejora antes de reducir el LR
+    min: float = 0.0        # Tasa de aprendizaje mínima permitida
 
 
 def compute_weighted_average(metrics_dict, samples_dict):
@@ -22,15 +29,15 @@ def compute_weighted_average(metrics_dict, samples_dict):
     # Obtenemos los nombres de las métricas de la primera entrada
     first_ds = next(iter(metrics_dict))
     metric_names = metrics_dict[first_ds].keys()
-    
+
     global_metrics = {}
     for m_name in metric_names:
         weighted_sum = sum(
-            metrics_dict[ds][m_name] * samples_dict[ds] 
+            metrics_dict[ds][m_name] * samples_dict[ds]
             for ds in metrics_dict
         )
         global_metrics[m_name] = weighted_sum / total_samples
-        
+
     return global_metrics
 
 
@@ -44,7 +51,7 @@ class TrainerEngine:
         self.base_metrics = metrics
         self.weights = torch.tensor(weights, device=device)
         self.dataset_names = dataset_names
-        
+
         # Estado persistente
         self.metric_trackers = {}
         self.loss_trackers = {}
@@ -53,7 +60,7 @@ class TrainerEngine:
         if ds_name not in self.metric_trackers:
             self.metric_trackers[ds_name] = [copy.deepcopy(m) for m in self.base_metrics]
         return self.metric_trackers[ds_name]
-    
+
     def _get_dataset_loss(self, ds_name):
         if ds_name not in self.loss_trackers:
             self.loss_trackers[ds_name] = copy.deepcopy(self.loss_fn)
@@ -67,7 +74,7 @@ class TrainerEngine:
         # Resetear estado al inicio de cada epoch
         epoch_losses = defaultdict(float)
         epoch_samples = defaultdict(int)  # ← local, no persistente
-        
+
         # Resetear metric trackers
         for trackers in self.metric_trackers.values():
             for m in trackers:
@@ -104,6 +111,7 @@ class TrainerEngine:
                 if is_train:
                     optimizer.zero_grad(set_to_none=True)
                     batch_loss_total.backward()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     optimizer.step()
 
         # Cálculo final con samples locales
@@ -123,18 +131,15 @@ class TrainerEngine:
 
 class TrainingReporter:
     @staticmethod
-    def print_epoch(epoch, total_epochs, train_metrics: EpochMetrics, val_metrics: EpochMetrics, loss_fn, metrics_list, weighted_metrics, val_losses):
+    def print_epoch(epoch, total_epochs, train_metrics, val_metrics, loss_fn, metrics_list, weighted_metrics, val_losses, current_train_loss, current_val_loss):
         print(f"\nEpoch {epoch}/{total_epochs}")
-        
+
         # Obtener nombres de datasets
         train_ds_names = list(train_metrics.subset_metrics.keys())
         val_ds_names = list(val_metrics.subset_metrics.keys())
-        
-        # Calcular promedios globales
-        train_loss_avg = np.mean([train_metrics.get_last_metric_value(ds, loss_fn) for ds in train_ds_names])
-        val_loss_avg = np.mean([val_metrics.get_last_metric_value(ds, loss_fn) for ds in val_ds_names])
-        
-        print(f"    Average - Train Loss: {loss_fn.format(train_loss_avg)} | Val Loss: {loss_fn.format(val_loss_avg)}")
+
+        # Imprimimos directamente los losses ponderados calculados en run_phase
+        print(f"    Global - Wgt Train Loss: {loss_fn.format(current_train_loss)} | Wgt Val Loss: {loss_fn.format(current_val_loss)}")
 
         # Mostrar detalle por dataset (Entrenamiento)
         for ds_name in train_ds_names:
@@ -153,14 +158,14 @@ class TrainingReporter:
                     print(f"{metric.name}: N/A | ", end='')
             print()
 
-        print("    [Wgt] ", end='')
+        print("    [Avg] ", end='')
         for m_name, value in weighted_metrics.items():
             metric_obj = next((m for m in metrics_list if m.name == m_name), None)
             print(f"{m_name}: {metric_obj.format(value)} | ", end='')
         print()
 
 # --- 3. DataManager ---
-    
+
 class ValSubset(Subset):
     def __init__(self, subset, name, dataset_id):
         super().__init__(subset.dataset, subset.indices)
@@ -170,7 +175,7 @@ class ValSubset(Subset):
     def __getitem__(self, idx):
         inputs, targets = super().__getitem__(idx)
         return inputs, targets, self.dataset_id
-    
+
     def __getitems__(self, indices):
         return [self.__getitem__(idx) for idx in indices]
 
@@ -216,7 +221,7 @@ class DataManager:
         # Fase X acumula el entrenamiento de los primeros X datasets
         train_subsets = [self.processed_datasets[i]['train'] for i in range(phase)]
         dataset_names = [self.processed_datasets[i]['name'] for i in range(phase)]
-        
+
         # Generamos los IDs (0, 1, ..., phase-1)
         dataset_ids = list(range(phase))
 
@@ -228,7 +233,7 @@ class DataManager:
             entry = self.processed_datasets[i]
             active_test_subsets.append(ValSubset(subset=entry['val'], name=entry['name'], dataset_id=i))
         return active_test_subsets
-    
+
 # --- 4. Entrenamiento ---
 
 def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, loss_fn, weights, dataset_names, metrics, patience, device):
@@ -244,7 +249,7 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
     for epoch in range(1, epochs + 1):
         # 1. Entrenamiento: Reseteamos antes de empezar
         t_losses, t_metrics, _ = engine.run_epoch(train_loader, optimizer)
-        
+
         # Registrar entrenamiento
         for ds_name, loss in t_losses.items():
             train_metrics.add_value(ds_name, loss_fn, loss)
@@ -256,30 +261,34 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
         epoch_val_losses = {}
         epoch_val_metrics = {}
         epoch_val_samples = {}
-        
+
         for loader in val_loaders:
             v_losses_dict, v_vals_dict, v_samples_dict = engine.run_epoch(loader)
             ds_name = loader.dataset.name
-            
+
             epoch_val_losses[ds_name] = v_losses_dict[ds_name]
             epoch_val_metrics[ds_name] = v_vals_dict[ds_name]
             epoch_val_samples[ds_name] = v_samples_dict[ds_name]
-            
+
             val_metrics.add_value(ds_name, loss_fn, v_losses_dict[ds_name])
             for m_name, val in v_vals_dict[ds_name].items():
                 val_metrics.add_value(ds_name, next(m for m in metrics if m.name == m_name), val)
 
         # 3. Reporte y Scheduler
-        current_val_loss = np.mean(list(epoch_val_losses.values()))
-        global_metrics = compute_weighted_average(epoch_val_metrics, epoch_val_samples)
+        # Calculamos AMBOS losses ponderados usando los pesos normalizados
+        current_train_loss = sum(t_losses[name] * w for name, w in zip(dataset_names, weights))
+        current_val_loss = sum(epoch_val_losses[name] * w for name, w in zip(dataset_names, weights))
         
+        global_metrics = compute_weighted_average(epoch_val_metrics, epoch_val_samples)
+
         if scheduler:
             scheduler.step(current_val_loss) if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else scheduler.step()
 
-        # Calculamos el resumen global usando los datos acumulados en engine
+        # Pasamos ambos losses ponderados al final
         TrainingReporter.print_epoch(
-            epoch, epochs, train_metrics, val_metrics, 
-            loss_fn, metrics, global_metrics, epoch_val_losses
+            epoch, epochs, train_metrics, val_metrics,
+            loss_fn, metrics, global_metrics, epoch_val_losses,
+            current_train_loss, current_val_loss  # ← Ahora pasamos los dos
         )
 
         phase_history[epoch] = {"train": {"losses": t_losses, "metrics": t_metrics}, "val": {"losses": epoch_val_losses, "metrics": epoch_val_metrics}}
@@ -294,16 +303,16 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
 
         if epochs_without_improvement >= patience:
             break
-            
+
     if best_weights:
         model.load_state_dict(best_weights)
-        
+
     return best_weights, phase_history
 
 
-def train(model, epochs, datasets, train_size, test_size, batch_size, 
-          learning_rate, weight_decay, loss_function, loss_weights, patience, metrics, seed=42):
-    
+def train(model, epochs, datasets, train_size, test_size, batch_size,
+          lr_configs, weight_decay, loss_function, loss_weights, patience, metrics, seed=42):
+
     # --- PREPARACIÓN DE LA CONFIGURACIÓN ---
     config = {
         "epochs": epochs,
@@ -311,7 +320,8 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
         "train_size": train_size,
         "test_size": test_size,
         "batch_size": batch_size,
-        "learning_rate": learning_rate, # Lista por fase
+        # Guardamos la configuración completa de LR para cada fase
+        "lr_configs": [asdict(cfg) for cfg in lr_configs], 
         "weight_decay": weight_decay,
         "loss_function": loss_function.name,
         "loss_weights": loss_weights,
@@ -319,33 +329,32 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
         "metrics": [m.name for m in metrics],
         "seed": seed,
     }
-    
+
     # Guardamos la configuración al iniciar
     os.makedirs(EXPERIMENTS_FOLDER, exist_ok=True)
     log_path = EXPERIMENTS_FOLDER / "experiment_logs.json"
     save_experiment_config(log_path, config)
-    
+
     # 1. Preparación del ambiente
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"ℹ️ Usando dispositivo: {device}")
-    
+
     torch.manual_seed(seed)
     model = model.to(device)
     data_manager = DataManager(datasets, train_size, test_size, seed)
-    
+
     # 2. Bucle de Fases
     phases = len(datasets)
     for phase in range(1, phases + 1):
         if epochs[phase-1] == 0: continue
-        
+
         # Normalización: solo datasets activos (hasta 'phase')
         active_weights = loss_weights[:phase]
         total_w = sum(active_weights)
         norm_weights = [w / total_w for w in active_weights]
-        print(f"    Pesos normalizados: {norm_weights}")
 
         active_names = [d.name for d in datasets[:phase]]
-        
+
         print(f"\nℹ️ Iniciando fase: {phase}/{phases}")
 
         train_loader = DataLoader(
@@ -354,25 +363,33 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
             num_workers=os.cpu_count(),
             pin_memory=(device.type == "cuda")
         )
-        
+
         val_subsets = data_manager.get_val_subsets(phase)
         val_loaders = [
-            DataLoader(subset, batch_size=batch_size, shuffle=False) 
+            DataLoader(subset, batch_size=batch_size, shuffle=False)
             for subset in val_subsets
         ]
-        
+
+        # Extraemos la configuración de LR correspondiente a esta fase
+        current_lr_config = lr_configs[phase-1]
+
         # Configurar optimizador específico de la fase
         optimizer = torch.optim.AdamW(
-            model.parameters(), 
-            lr=learning_rate[phase-1], 
+            model.parameters(),
+            lr=current_lr_config.start,
             weight_decay=weight_decay
         )
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.1, patience=5
+        # Configurar el scheduler con la clase
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=current_lr_config.factor,
+            patience=current_lr_config.patience,
+            min_lr=current_lr_config.min
         )
 
-        # 3. Ejecutar fase (aquí entra nuestro nuevo motor)
+        # 3. Ejecutar fase
         best_weights, phase_history = run_phase(
             model=model,
             train_loader=train_loader,
@@ -390,7 +407,7 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
 
         # Guardar en JSON
         save_phase_history(log_path, phase, phase_history)
-        
+
         # Cargar los mejores pesos al terminar la fase
         model.load_state_dict(best_weights)
 

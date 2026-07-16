@@ -19,6 +19,34 @@ The framework implements both *greedy* and *beam search* procedures to evaluate 
 * **BSG-ModelFull:** Uses the model for both state expansion and evaluation, performing *greedy rollouts* driven entirely by the model to select the highest final volume.
 * **BSG-VCS:** A pure heuristic baseline that uses VCS for both state expansion and evaluation.
 
+## Installation
+
+**1. Clone the repository:**
+```bash
+git clone [https://github.com/OscarRojasG/CLP-Framework.git](https://github.com/OscarRojasG/CLP-Framework.git)
+cd CLP-Framework
+```
+
+**2. Set up a virtual environment (Recommended):**
+It is highly recommended to isolate the project dependencies using a virtual environment.
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**3. Install Python dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+**4. Compile C++ Executables and Bindings:**
+The framework relies on compiled C++ modules for the heuristic and environment engines. You must recompile the following binaries for your local architecture:
+* `BSG_CLP`
+* `VCS`
+* `src/envs/bsm_engine_inf.*.so`
+
+Please refer to [this repository](https://github.com/OscarRojasG/metasolver) for detailed compilation instructions and the Makefiles required to build these components.
+
 ## Usage
 
 For complete examples, refer to the `notebooks/validation.ipynb` notebook.

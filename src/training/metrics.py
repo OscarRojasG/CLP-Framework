@@ -104,17 +104,36 @@ class KL_Divergence(Metric):
         return self.total_kl / self.total_samples
     
 class CrossEntropyLoss(Metric):
-    def __init__(self):
+    def __init__(self, label_smoothing: float = 0.0):
         super().__init__("CrossEntropy", False)
+        self.label_smoothing = label_smoothing
 
     def reset(self):
         self.total_samples = 0
         self.total_ce = 0
-    
+
+    def _smooth(self, logits, y):
+        """
+        La acción correcta recibe (1 - label_smoothing) y el resto se reparte
+        uniformemente entre las demás acciones válidas. Las acciones de padding
+        (logits = -1e9 en el modelo) no reciben masa, ya que dispararían la pérdida.
+        """
+        valid = logits > -1e8
+        num_others = (valid.sum(dim=-1, keepdim=True) - 1).clamp(min=1)
+
+        off_value = valid * (self.label_smoothing / num_others)
+        smoothed = (1.0 - self.label_smoothing) * y + off_value * (1.0 - y)
+
+        # Si solo hay una acción válida no hay a quién repartir la masa
+        single = valid.sum(dim=-1, keepdim=True) <= 1
+        return torch.where(single, y, smoothed)
+
     def step(self, logits, y):
         batch_size = y.size(0)
 
         y = y / y.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        if self.label_smoothing > 0:
+            y = self._smooth(logits, y)
         ce = F.cross_entropy(logits, y, reduction='mean')
 
         self.total_ce += ce.item() * batch_size 

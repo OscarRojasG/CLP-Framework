@@ -1,5 +1,6 @@
 import subprocess
 import os
+import shutil
 import h5py
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
@@ -234,8 +235,14 @@ def run_instances_parallel(instance_filename, w, num_actions, min_fr, double_eff
     # Preparar el nombre de la carpeta base para pasar a run_instance
     base_folder = os.path.splitext(os.path.basename(instance_filename))[0]
 
-    # Nos aseguramos de que la carpeta output principal exista (las subcarpetas se crearán en run_instance)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    if not base_folder:
+        raise ValueError(f"No se pudo obtener un nombre de carpeta válido desde '{instance_filename}'")
+
+    # Vaciamos la carpeta de salida para no mezclar archivos de ejecuciones anteriores
+    dest_dir = OUTPUT_FOLDER / base_folder
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)
+    os.makedirs(dest_dir)
 
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

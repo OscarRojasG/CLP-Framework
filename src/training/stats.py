@@ -4,17 +4,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from settings import EXPERIMENTS_FOLDER
 
-def report_metric(metric_name, phase, filepath='experiment_logs.json'):
+def report_metric(metric_name, filepath='experiment_logs.json'):
     """
-    Retorna un DataFrame con la evolución de una métrica para cada dataset 
-    en una fase específica, incluyendo una columna 'ponderado' con el promedio.
+    Retorna un DataFrame con la evolución de una métrica para cada dataset,
+    incluyendo una columna 'ponderado' con el promedio.
     """
     with open(filepath, 'r') as f:
         data = json.load(f)
 
-    phase_key = f"phase_{phase}"
-    if phase_key not in data:
-        print(f"Error: La fase {phase} no existe en el archivo.")
+    if "history" not in data:
+        print("Error: El archivo no contiene un historial de entrenamiento.")
         return None
 
     # 1. Extraemos la configuración de pesos y datasets
@@ -30,8 +29,8 @@ def report_metric(metric_name, phase, filepath='experiment_logs.json'):
 
     records = []
     
-    # Iteramos sobre las épocas de la fase
-    for epoch_key, epoch_data in data[phase_key].items():
+    # Iteramos sobre las épocas
+    for epoch_key, epoch_data in data["history"].items():
         epoch_num = int(epoch_key.split('_')[1])
         
         # Obtenemos las métricas de validación
@@ -64,7 +63,7 @@ def report_metric(metric_name, phase, filepath='experiment_logs.json'):
     df.index.name = None
     return df
 
-def report_loss(phase, filepath='experiment_logs.json'):
+def report_loss(filepath='experiment_logs.json'):
     """
     Retorna un DataFrame con la evolución del Loss de validación 
     para cada dataset y una columna 'promedio' ponderado adicional.
@@ -72,9 +71,8 @@ def report_loss(phase, filepath='experiment_logs.json'):
     with open(filepath, 'r') as f:
         data = json.load(f)
 
-    phase_key = f"phase_{phase}"
-    if phase_key not in data:
-        print(f"Error: La fase {phase} no existe en el archivo.")
+    if "history" not in data:
+        print("Error: El archivo no contiene un historial de entrenamiento.")
         return None
 
     # 1. Extraemos la configuración de pesos y datasets
@@ -88,8 +86,8 @@ def report_loss(phase, filepath='experiment_logs.json'):
 
     records = []
     
-    # Iteramos sobre las épocas de la fase
-    for epoch_key, epoch_data in data[phase_key].items():
+    # Iteramos sobre las épocas
+    for epoch_key, epoch_data in data["history"].items():
         epoch_num = int(epoch_key.split('_')[1])
         
         # Obtenemos los losses directamente
@@ -156,7 +154,7 @@ def plot_curves(df, y_axis_name="Loss", title=None):
     # Mostramos el gráfico
     plt.show()
 
-def compare_train_val_loss(phase, filepath='experiment_logs.json'):
+def compare_train_val_loss(filepath='experiment_logs.json'):
     """
     Retorna un DataFrame que compara el Loss ponderado de entrenamiento (train)
     contra el Loss ponderado de validación (val) para cada época.
@@ -164,9 +162,8 @@ def compare_train_val_loss(phase, filepath='experiment_logs.json'):
     with open(EXPERIMENTS_FOLDER / filepath, 'r') as f:
         data = json.load(f)
 
-    phase_key = f"phase_{phase}"
-    if phase_key not in data:
-        print(f"Error: La fase {phase} no existe en el archivo.")
+    if "history" not in data:
+        print("Error: El archivo no contiene un historial de entrenamiento.")
         return None
 
     # Extraemos la configuración oficial de datasets y pesos
@@ -177,8 +174,8 @@ def compare_train_val_loss(phase, filepath='experiment_logs.json'):
 
     records = []
 
-    # Iteramos sobre las épocas de la fase
-    for epoch_key, epoch_data in data[phase_key].items():
+    # Iteramos sobre las épocas
+    for epoch_key, epoch_data in data["history"].items():
         epoch_num = int(epoch_key.split('_')[1])
         
         # Extraemos los diccionarios de pérdidas

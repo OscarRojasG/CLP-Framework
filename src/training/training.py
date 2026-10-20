@@ -1,7 +1,7 @@
 import copy
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset, random_split
-from training.logging import save_experiment_config, save_phase_history
+from torch.utils.data import DataLoader, Dataset, Sampler, Subset, random_split
+from training.logging import save_experiment_config, save_history
 from training.metrics import *
 from settings import MODELS_FOLDER, HYPERPARAMETERS_FOLDER, EXPERIMENTS_FOLDER
 import os
@@ -138,7 +138,7 @@ class TrainingReporter:
         train_ds_names = list(train_metrics.subset_metrics.keys())
         val_ds_names = list(val_metrics.subset_metrics.keys())
 
-        # Imprimimos directamente los losses ponderados calculados en run_phase
+        # Imprimimos directamente los losses ponderados calculados en run_training
         print(f"    Global - Wgt Train Loss: {loss_fn.format(current_train_loss)} | Wgt Val Loss: {loss_fn.format(current_val_loss)}")
 
         # Mostrar detalle por dataset (Entrenamiento)
@@ -197,6 +197,31 @@ class TrainSubset(Dataset):
     def __len__(self):
         return self.total_len
 
+class BalancedSampler(Sampler):
+    """
+    Recorre un TrainSubset intercalando los datasets en rueda (0, 1, ..., N-1, 0, 1, ...),
+    de modo que cada batch contiene la misma proporción de cada dataset.
+    El orden de las muestras dentro de cada dataset se permuta en cada época.
+    """
+    def __init__(self, dataset: TrainSubset, seed):
+        self.num_datasets = dataset.num_datasets
+        self.single_len = dataset.single_len
+        self.generator = torch.Generator().manual_seed(seed)
+
+    def __iter__(self):
+        # perms[i, d] = muestra i-ésima del dataset d en esta época
+        perms = torch.stack([
+            torch.randperm(self.single_len, generator=self.generator)
+            for _ in range(self.num_datasets)
+        ], dim=1)
+
+        # TrainSubset espera index = sample_idx * num_datasets + dataset_idx
+        indices = perms * self.num_datasets + torch.arange(self.num_datasets)
+        return iter(indices.flatten().tolist())
+
+    def __len__(self):
+        return self.single_len * self.num_datasets
+
 class DataManager:
     def __init__(self, datasets, train_size, test_size, seed):
         self.generator = torch.Generator().manual_seed(seed)
@@ -217,26 +242,22 @@ class DataManager:
                 'name': dataset.name
             })
 
-    def get_train_subset(self, phase):
-        # Fase X acumula el entrenamiento de los primeros X datasets
-        train_subsets = [self.processed_datasets[i]['train'] for i in range(phase)]
-        dataset_names = [self.processed_datasets[i]['name'] for i in range(phase)]
-
-        # Generamos los IDs (0, 1, ..., phase-1)
-        dataset_ids = list(range(phase))
+    def get_train_subset(self):
+        train_subsets = [entry['train'] for entry in self.processed_datasets]
+        dataset_names = [entry['name'] for entry in self.processed_datasets]
+        dataset_ids = list(range(len(self.processed_datasets)))
 
         return TrainSubset(train_subsets, dataset_names, dataset_ids)
 
-    def get_val_subsets(self, phase):
-        active_test_subsets = []
-        for i in range(phase):
-            entry = self.processed_datasets[i]
-            active_test_subsets.append(ValSubset(subset=entry['val'], name=entry['name'], dataset_id=i))
-        return active_test_subsets
+    def get_val_subsets(self):
+        return [
+            ValSubset(subset=entry['val'], name=entry['name'], dataset_id=i)
+            for i, entry in enumerate(self.processed_datasets)
+        ]
 
 # --- 4. Entrenamiento ---
 
-def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, loss_fn, weights, dataset_names, metrics, patience, device):
+def run_training(model, train_loader, val_loaders, epochs, optimizer, scheduler, loss_fn, weights, dataset_names, metrics, patience, device):
     engine = TrainerEngine(model, device, loss_fn, metrics, weights, dataset_names)
     train_metrics = EpochMetrics()
     val_metrics = EpochMetrics()
@@ -244,7 +265,7 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
     best_val_loss = float('inf')
     best_weights = None
     epochs_without_improvement = 0
-    phase_history = {}
+    history = {}
 
     for epoch in range(1, epochs + 1):
         # 1. Entrenamiento: Reseteamos antes de empezar
@@ -291,7 +312,7 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
             current_train_loss, current_val_loss  # ← Ahora pasamos los dos
         )
 
-        phase_history[epoch] = {"train": {"losses": t_losses, "metrics": t_metrics}, "val": {"losses": epoch_val_losses, "metrics": epoch_val_metrics}}
+        history[epoch] = {"train": {"losses": t_losses, "metrics": t_metrics}, "val": {"losses": epoch_val_losses, "metrics": epoch_val_metrics}}
 
         # Checkpointing
         if current_val_loss < best_val_loss:
@@ -304,14 +325,17 @@ def run_phase(model, train_loader, val_loaders, epochs, optimizer, scheduler, lo
         if epochs_without_improvement >= patience:
             break
 
-    if best_weights:
+    if best_weights is not None:
         model.load_state_dict(best_weights)
 
-    return best_weights, phase_history
+    return history
 
 
 def train(model, epochs, datasets, train_size, test_size, batch_size,
-          lr_configs, weight_decay, loss_function, loss_weights, patience, metrics, seed=42):
+          lr_config, weight_decay, loss_function, loss_weights, patience, metrics, seed=42):
+
+    if len(loss_weights) != len(datasets):
+        raise ValueError(f"Se esperaban {len(datasets)} loss_weights (uno por dataset), se recibieron {len(loss_weights)}")
 
     # --- PREPARACIÓN DE LA CONFIGURACIÓN ---
     config = {
@@ -320,8 +344,7 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
         "train_size": train_size,
         "test_size": test_size,
         "batch_size": batch_size,
-        # Guardamos la configuración completa de LR para cada fase
-        "lr_configs": [asdict(cfg) for cfg in lr_configs], 
+        "lr_config": asdict(lr_config),
         "weight_decay": weight_decay,
         "loss_function": loss_function.name,
         "loss_weights": loss_weights,
@@ -343,73 +366,59 @@ def train(model, epochs, datasets, train_size, test_size, batch_size,
     model = model.to(device)
     data_manager = DataManager(datasets, train_size, test_size, seed)
 
-    # 2. Bucle de Fases
-    phases = len(datasets)
-    for phase in range(1, phases + 1):
-        if epochs[phase-1] == 0: continue
+    # Normalización de pesos
+    total_w = sum(loss_weights)
+    norm_weights = [w / total_w for w in loss_weights]
+    dataset_names = [d.name for d in datasets]
 
-        # Normalización: solo datasets activos (hasta 'phase')
-        active_weights = loss_weights[:phase]
-        total_w = sum(active_weights)
-        norm_weights = [w / total_w for w in active_weights]
+    # 2. Datos
+    train_subset = data_manager.get_train_subset()
+    train_loader = DataLoader(
+        train_subset,
+        batch_size=batch_size,
+        sampler=BalancedSampler(train_subset, seed),
+        num_workers=os.cpu_count(),
+        pin_memory=(device.type == "cuda")
+    )
 
-        active_names = [d.name for d in datasets[:phase]]
+    val_loaders = [
+        DataLoader(subset, batch_size=batch_size, shuffle=False)
+        for subset in data_manager.get_val_subsets()
+    ]
 
-        print(f"\nℹ️ Iniciando fase: {phase}/{phases}")
+    # 3. Optimizador y scheduler
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=lr_config.start,
+        weight_decay=weight_decay
+    )
 
-        train_loader = DataLoader(
-            data_manager.get_train_subset(phase),
-            batch_size=batch_size, shuffle=False,
-            num_workers=os.cpu_count(),
-            pin_memory=(device.type == "cuda")
-        )
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=lr_config.factor,
+        patience=lr_config.patience,
+        min_lr=lr_config.min
+    )
 
-        val_subsets = data_manager.get_val_subsets(phase)
-        val_loaders = [
-            DataLoader(subset, batch_size=batch_size, shuffle=False)
-            for subset in val_subsets
-        ]
+    # 4. Entrenamiento (al terminar, el modelo queda con los mejores pesos)
+    history = run_training(
+        model=model,
+        train_loader=train_loader,
+        val_loaders=val_loaders,
+        epochs=epochs,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        loss_fn=loss_function,
+        weights=norm_weights,
+        dataset_names=dataset_names,
+        metrics=metrics,
+        patience=patience,
+        device=device
+    )
 
-        # Extraemos la configuración de LR correspondiente a esta fase
-        current_lr_config = lr_configs[phase-1]
-
-        # Configurar optimizador específico de la fase
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=current_lr_config.start,
-            weight_decay=weight_decay
-        )
-
-        # Configurar el scheduler con la clase
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=current_lr_config.factor,
-            patience=current_lr_config.patience,
-            min_lr=current_lr_config.min
-        )
-
-        # 3. Ejecutar fase
-        best_weights, phase_history = run_phase(
-            model=model,
-            train_loader=train_loader,
-            val_loaders=val_loaders,
-            epochs=epochs[phase-1],
-            optimizer=optimizer,
-            scheduler=scheduler,
-            loss_fn=loss_function,
-            weights=norm_weights,
-            dataset_names=active_names,
-            metrics=metrics,
-            patience=patience,
-            device=device
-        )
-
-        # Guardar en JSON
-        save_phase_history(log_path, phase, phase_history)
-
-        # Cargar los mejores pesos al terminar la fase
-        model.load_state_dict(best_weights)
+    # Guardar en JSON
+    save_history(log_path, history)
 
     return model
 

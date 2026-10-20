@@ -14,8 +14,8 @@ def save_experiment_config(filepath, config):
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=4)
 
-def save_phase_history(filepath, phase, history):
-    """Guarda el historial de una fase completa en un JSON existente."""
+def save_history(filepath, history):
+    """Guarda el historial de entrenamiento en un JSON existente."""
     data = {}
     
     if os.path.exists(filepath):
@@ -23,8 +23,8 @@ def save_phase_history(filepath, phase, history):
             try: data = json.load(f)
             except: pass
 
-    # Estructura: phase_X -> epoch_Y -> {train/val} -> {losses/metrics}
-    data[f"phase_{phase}"] = {f"epoch_{e}": stats for e, stats in history.items()}
+    # Estructura: history -> epoch_Y -> {train/val} -> {losses/metrics}
+    data["history"] = {f"epoch_{e}": stats for e, stats in history.items()}
 
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=4)

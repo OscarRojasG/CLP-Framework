@@ -70,14 +70,14 @@ class InventoryAttentionBlock(nn.Module):
         return x_blocks, x_inv
 
 class CLPTransformer(Transformer):
-    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3, ff_dim_multiplier=3, dropout=0.1):
+    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, encoder_layers=3, decoder_layers=3, ff_dim_multiplier=3, dropout=0.1):
         super().__init__(
             block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
-            d_model=d_model, nhead=nhead, num_layers=num_layers,
+            d_model=d_model, nhead=nhead, encoder_layers=encoder_layers, decoder_layers=decoder_layers,
             ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
         self.d_model = d_model
-        self.num_layers = num_layers
+        self.decoder_layers = decoder_layers
 
         # ======================================================
         # --- 1. RUTA DEL ENCODER (CATÁLOGO / INVENTARIO) ---
@@ -91,7 +91,7 @@ class CLPTransformer(Transformer):
         # El bloque iterativo x N del diagrama
         self.inventory_layers = nn.ModuleList([
             InventoryAttentionBlock(d_model, nhead, ff_dim_multiplier, dropout)
-            for _ in range(num_layers)
+            for _ in range(encoder_layers)
         ])
 
         # ======================================================
@@ -123,7 +123,7 @@ class CLPTransformer(Transformer):
         # --- 4. DECODER: Acciones atienden al Contenedor ---
         self.cross_attn_layers = nn.ModuleList([
             nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
-            for _ in range(num_layers)
+            for _ in range(decoder_layers)
         ])
         self.decoder_ff_layers = nn.ModuleList([
             nn.Sequential(
@@ -132,12 +132,12 @@ class CLPTransformer(Transformer):
                 nn.Linear(d_model * ff_dim_multiplier, d_model),
                 nn.Dropout(dropout)
             )
-            for _ in range(num_layers)
+            for _ in range(decoder_layers)
         ])
         self.attn_dropout = nn.Dropout(dropout)
         
-        self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
-        self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(decoder_layers)])
+        self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(decoder_layers)])
         self.final_dec_norm = nn.LayerNorm(d_model)
 
         # ======================================================
@@ -197,7 +197,7 @@ class CLPTransformer(Transformer):
         container_enriched = self.container_norm(container + container_enriched)
 
         # --- 3. CROSS-ATTENTION: Acciones atienden al Contenedor ---
-        for i in range(self.num_layers):
+        for i in range(self.decoder_layers):
             normed_queries = self.dec_norm1_layers[i](queries)
             # Acciones (Q) atienden al contenedor (K, V)
             attn_output, _ = self.cross_attn_layers[i](

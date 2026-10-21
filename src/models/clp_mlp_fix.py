@@ -22,16 +22,13 @@ class CLPMLPFix(CLPTransformerFix):
     aplicada a cada bloque por separado (sin InventoryAttention).
     El decoder es el mismo de CLPTransformerFix.
     """
-    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, num_layers=3,
-                 ff_dim_multiplier=3, dropout=0.1, encoder_layers=2):
+    def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, encoder_layers=2, decoder_layers=3,
+                 ff_dim_multiplier=3, dropout=0.1):
         super().__init__(
             block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
-            d_model=d_model, nhead=nhead, num_layers=num_layers,
+            d_model=d_model, nhead=nhead, encoder_layers=encoder_layers, decoder_layers=decoder_layers,
             ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
-        # Registrado para que load_model pueda reconstruir el modelo
-        self.hyperparams["encoder_layers"] = encoder_layers
-
         # Eliminamos la ruta de InventoryAttention heredada
         del self.inventory_layers
         del self.inv_query_token

@@ -3,10 +3,11 @@ class Block:
         self.l = data[0]
         self.w = data[1]
         self.h = data[2]
-        self.n = data[3]
+        self.vol = data[3]
+        self.n = data[4]
 
     def volume(self):
-        return self.l * self.w * self.h
+        return self.vol
     
     def lw(self):
         return self.l * self.w

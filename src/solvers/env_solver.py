@@ -8,7 +8,7 @@ class EnvSolver():
         self.inference_mode = inference_mode
         
     def process_block_data(self, data):
-        return [Block(data[i:i+4]) for i in range(0, len(data), 4)]
+        return [Block(data[i:i+5]) for i in range(0, len(data), 5)]
     
     def process_pblock_data(self, data):
         return [PBlock(data[i:i+4]) for i in range(0, len(data), 4)]

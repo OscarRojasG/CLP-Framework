@@ -4,10 +4,13 @@ from abc import ABC, abstractmethod
 class DataAdapter(ABC):
     def __init__(self, keys):
         super().__init__()
-        self.data = {
-            k: [] for k in keys
-        }
         self.keys = keys
+        self.reset()
+
+    def reset(self):
+        self.data = {
+            k: [] for k in self.keys
+        }
 
     def add(self, sample: tuple):
         for k, v in zip(self.keys, sample):

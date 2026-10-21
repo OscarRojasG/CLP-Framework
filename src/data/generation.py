@@ -123,6 +123,10 @@ def process_single_file(filepath, input_adapter, output_adapter, min_blocks, min
 
 def generate_data(folder, input_adapter, output_adapter, min_blocks, min_actions, max_actions, prefix=None):
     os.makedirs(DATA_FOLDER, exist_ok=True)
+
+    # Vaciamos los adaptadores para no acumular datos de llamadas anteriores
+    input_adapter.reset()
+    output_adapter.reset()
     
     # 1. Obtener y ordenar la lista de archivos para asegurar determinismo
     folder_path = OUTPUT_FOLDER / folder

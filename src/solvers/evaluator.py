@@ -9,6 +9,9 @@ import pandas as pd
 from settings import EXPERIMENTS_FOLDER
 
 def run_eval(solver_list, instance_file, num_instances, output_csv=None):
+    # Un solo hilo para que el CPU time medido por los solvers sea comparable
+    torch.set_num_threads(1)
+
     # Si se proporciona un nombre de archivo, preparamos la ruta y limpiamos ejecuciones previas
     if output_csv:
         output_path = EXPERIMENTS_FOLDER / output_csv

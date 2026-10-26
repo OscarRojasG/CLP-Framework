@@ -82,20 +82,24 @@ class TrainerEngine:
 
         with context:
             for inputs_batch, targets_batch, ids_batch in loader:
-                unique_ids = torch.unique(ids_batch)
+                inputs = [i.to(self.device, non_blocking=True) for i in inputs_batch]
+                targets = [t.to(self.device, non_blocking=True) for t in targets_batch]
+                ids_batch = ids_batch.to(self.device, non_blocking=True)
+
+                # Un solo forward con el batch completo; el loss y las métricas se separan por dataset
+                logits = self.model(*inputs)
                 batch_loss_total = 0
 
-                for ds_id in unique_ids:
+                for ds_id in torch.unique(ids_batch):
                     ds_idx = ds_id.item()
                     ds_name = self.dataset_names[ds_idx]
 
                     mask = (ids_batch == ds_id)
-                    ds_inputs = [i[mask].to(self.device, non_blocking=True) for i in inputs_batch]
-                    ds_targets = [t[mask].to(self.device, non_blocking=True) for t in targets_batch]
+                    ds_logits = logits[mask]
+                    ds_targets = [t[mask] for t in targets]
 
-                    logits = self.model(*ds_inputs)
                     ds_loss_tracker = self._get_dataset_loss(ds_name)
-                    ds_loss = ds_loss_tracker.step(logits, ds_targets[0])  # acumula correctamente
+                    ds_loss = ds_loss_tracker.step(ds_logits, ds_targets[0])  # acumula correctamente
 
                     epoch_losses[ds_name] += ds_loss.item()
                     epoch_samples[ds_name] += mask.sum().item()  # ← local
@@ -106,7 +110,7 @@ class TrainerEngine:
                     ds_metrics = self._get_dataset_metrics(ds_name)
                     for metric in ds_metrics:
                         for t in ds_targets:
-                            metric.step(logits, t)
+                            metric.step(ds_logits, t)
 
                 if is_train:
                     optimizer.zero_grad(set_to_none=True)

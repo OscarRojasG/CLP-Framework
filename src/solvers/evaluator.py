@@ -15,11 +15,20 @@ def run_eval(solver_list, instance_file, num_instances, output_csv=None):
     # Si se proporciona un nombre de archivo, preparamos la ruta y limpiamos ejecuciones previas
     if output_csv:
         output_path = EXPERIMENTS_FOLDER / output_csv
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         if os.path.exists(output_path):
             os.remove(output_path)
 
     solver_stats = defaultdict(lambda: {'Vol': [], 'Time': []})
     instances = list(range(num_instances))
+
+    # Warm-up: resolvemos la primera instancia y descartamos el resultado,
+    # para que la inicialización (p. ej. kernels de torch) no infle el tiempo medido
+    for solver in solver_list:
+        try:
+            solver.solve(instance_file, instances[0])
+        except Exception:
+            pass
 
     for i in instances:
         for s_idx, solver in enumerate(solver_list):

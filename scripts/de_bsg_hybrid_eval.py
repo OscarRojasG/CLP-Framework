@@ -1,0 +1,22 @@
+from models.clp_model import CLPModel
+from training.training import load_model
+from solvers.evaluator import run_eval
+from solvers.double_effort import DE_BSG_ModelVCS_Solver
+
+model_name = "M30"
+
+t = 30  # tiempo límite (s)
+num_instances = 100
+benchmarks = range(1, 16)  # BR1..BR15; también sirve una lista, p. ej. [8, 9, 10]
+output_dir = "de_bsg_hybrid"  # relativo a EXPERIMENTS_FOLDER
+
+model = load_model(CLPModel, model_name)
+
+for k in benchmarks:
+    instance_file = f"benchmarks/BR{k}.txt"
+    output_csv = f"{output_dir}/de_bsg_hybrid_{model_name}_t{t}_BR{k}.csv"
+    min_fr = 1 if k <= 7 else 0.98
+
+    solver = DE_BSG_ModelVCS_Solver(model, None, t, min_fr)
+
+    run_eval([solver], instance_file, num_instances, output_csv=output_csv)

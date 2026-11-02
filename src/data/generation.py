@@ -193,7 +193,7 @@ def save_data(input_data, output_data, ranks, output_name):
     print(f"Datos guardados en: {output_path} (Tamaño {len(output_data[key])})")
 
     
-def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, double_effort):
+def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions):
     """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Guardamos dentro de output_folder/base_folder
@@ -219,9 +219,6 @@ def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, doub
             f"--verbose"
         ]
 
-        if double_effort:
-            cmd.append("--de")
-
         subprocess.run(
             cmd,
             stdout=f,
@@ -231,7 +228,7 @@ def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions, doub
         )
 
 
-def run_instances_parallel(instance_filename, w, num_actions, min_fr, double_effort, max_workers=None):
+def run_instances_parallel(instance_filename, w, num_actions, min_fr, max_workers=None):
     # Leer número de instancias
     with open(INSTANCE_FOLDER / instance_filename, "r") as f:
         num_instances = int(f.readline().strip())
@@ -251,7 +248,7 @@ def run_instances_parallel(instance_filename, w, num_actions, min_fr, double_eff
     # Ejecutar las instancias en paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr, num_actions, double_effort) 
+            executor.submit(run_instance, instance_filename, i, w, base_folder, min_fr, num_actions)
             for i in range(num_instances)
         ]
             

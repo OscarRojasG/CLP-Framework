@@ -3,8 +3,11 @@ import torch.nn as nn
 import torch
 
 class Transformer(nn.Module, ABC):
-    def __init__(self, **hyperparams):
-        torch.manual_seed(42)
+    def __init__(self, seed=None, **hyperparams):
+        # La semilla se fija antes de que la subclase cree sus capas, por lo que determina la inicialización.
+        # No se guarda en hyperparams (no forma parte de la arquitectura).
+        if seed is not None:
+            torch.manual_seed(seed)
         super(Transformer, self).__init__()
         self.hyperparams = hyperparams
         self.biased = False

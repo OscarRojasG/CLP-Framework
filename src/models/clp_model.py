@@ -28,8 +28,9 @@ class CLPModel(Transformer):
     El decoder hace que las acciones candidato atiendan a un contenedor enriquecido.
     """
     def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, scoring_layers=3,
-                 cont_layers=2, enc_layers=2, ff_dim_multiplier=3, dropout=0.1):
+                 cont_layers=2, enc_layers=2, ff_dim_multiplier=3, dropout=0.1, seed=None):
         super().__init__(
+            seed=seed,
             block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
             d_model=d_model, nhead=nhead, scoring_layers=scoring_layers,
             cont_layers=cont_layers, enc_layers=enc_layers,

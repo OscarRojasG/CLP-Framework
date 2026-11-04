@@ -11,8 +11,9 @@ from models.clp_model import build_mlp
 
 class CLPModelNoCont(Transformer):
     def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, scoring_layers=3,
-                 enc_layers=2, ff_dim_multiplier=3, dropout=0.1):
+                 enc_layers=2, ff_dim_multiplier=3, dropout=0.1, seed=None):
         super().__init__(
+            seed=seed,
             block_dim=block_dim, action_dim=action_dim, placed_dim=placed_dim,
             d_model=d_model, nhead=nhead, scoring_layers=scoring_layers,
             enc_layers=enc_layers, ff_dim_multiplier=ff_dim_multiplier, dropout=dropout

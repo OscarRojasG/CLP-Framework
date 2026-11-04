@@ -4,7 +4,7 @@ import torch
 
 
 class BSG_ModelVCS_Solver(BSMSolver, EnvSolver):
-    def __init__(self, model, input_adapter, w, min_fr, inference_mode=True):
+    def __init__(self, model, input_adapter, w, min_fr, fixed_w=True, inference_mode=True):
         if inference_mode:
             from envs.bsm_engine_inf import BSM_VCS
         else:
@@ -13,6 +13,7 @@ class BSG_ModelVCS_Solver(BSMSolver, EnvSolver):
         super().__init__("BSM-VCS", BSM_VCS, w, min_fr, input_adapter, inference_mode)
         self.model = model
         self.input_adapter = input_adapter
+        self.fixed_w = fixed_w
 
     def solve_from_env(self, env):        
         device = next(self.model.parameters()).device
@@ -42,7 +43,12 @@ class BSG_ModelVCS_Solver(BSMSolver, EnvSolver):
                 output = self.model.decode(*memory, *dec_tensors)
 
                 # 3. Selección de acciones
-                topk_values, topk_indices = output.topk(min(self.w, output.size(1)), dim=1)
+                if self.fixed_w:
+                    topk_values, topk_indices = output.topk(min(self.w, output.size(1)), dim=1)
+                else:
+                    # Se reparten w*w hijos entre los nodos del batch
+                    k = int(self.w * self.w / current_batch_size + 0.5)
+                    topk_values, topk_indices = output.topk(min(k, output.size(1)), dim=1)
 
                 if self.inference_mode:
                     action_ids_tensor = dec_tensors[0] # [B, max_actions]

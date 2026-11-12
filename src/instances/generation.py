@@ -67,14 +67,17 @@ def instance(n_types=10, seed=42):
 def generate_instances(filename, n_instances=100, n_types=10, seed=42):
     """
     Genera un archivo con varias instancias CLP en el formato definido.
+    filename es relativo a INSTANCE_FOLDER y puede incluir subcarpetas (p. ej. "validation/V1.txt").
     """
+    path = INSTANCE_FOLDER / filename
+
     # Asegurarse de que la carpeta de salida exista
-    os.makedirs(INSTANCE_FOLDER, exist_ok=True)
+    os.makedirs(path.parent, exist_ok=True)
 
     # Fijar semilla generadora de números aleatorios
     random.seed(seed)
 
-    with open(INSTANCE_FOLDER / filename, "w") as f:
+    with open(path, "w") as f:
         # número total de instancias
         f.write(str(n_instances) + "\n")
 

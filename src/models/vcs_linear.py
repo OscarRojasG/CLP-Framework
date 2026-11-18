@@ -12,7 +12,7 @@ class VCSLinear(Transformer):
     con exponentes aprendidos (salvo un factor de escala, que el softmax absorbe; ver exponents()).
 
     Usa los mismos tensores que InputAdapterV1 (y que el TensorEncoder del motor C++), por lo que se
-    entrena con los datasets actuales y se usa en BSG_ModelVCS_Solver sin cambios:
+    entrena con los datasets actuales y se usa en BSG_Hybrid_Solver sin cambios:
         block_features[..., 3] = V(b) = volumen ocupado / volumen del contenedor
         block_features[..., 4] = N(b) = 1/n
         action_features[..., 0] = L(b,r) (recortada a 0 en los tensores; VCS usa la pérdida sin recortar, que puede ser negativa)

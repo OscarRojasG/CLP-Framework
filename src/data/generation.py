@@ -3,7 +3,7 @@ import os
 import shutil
 import h5py
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_SOLVER_PATH
+from settings import INSTANCE_FOLDER, OUTPUT_FOLDER, DATA_FOLDER, BSG_VCS_PATH
 from data.objects import *
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -194,7 +194,7 @@ def save_data(input_data, output_data, ranks, output_name):
 
     
 def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions):
-    """Ejecuta BSG_CLP para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
+    """Ejecuta BSG_VCS para una instancia y guarda la salida en un archivo .out dentro de una carpeta específica o en la misma ruta que file_path"""
 
     # Guardamos dentro de output_folder/base_folder
     dest_dir = os.path.join(OUTPUT_FOLDER, base_folder)
@@ -210,7 +210,7 @@ def run_instance(instance_filename, i, w, base_folder, min_fr, num_actions):
     # Ejecutar el proceso y capturar la salida
     with open(output_file_path, 'w') as f:
         cmd = [
-            BSG_SOLVER_PATH, 
+            BSG_VCS_PATH, 
             os.path.join(INSTANCE_FOLDER, instance_filename), 
             "-i", str(i), 
             "-w", str(w), 

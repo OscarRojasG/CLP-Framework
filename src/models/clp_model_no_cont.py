@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from models.base.transformer import Transformer
-from models.clp_model import build_mlp
+from models.clp_model import build_mlp, build_single_key_attention, single_key_attention
 
 # Ablación de CLPModel sin container stream:
 #   - Se eliminan la proyección de bloques colocados, el token vacío y las capas cont_layers.
@@ -19,7 +19,9 @@ class CLPModelNoCont(Transformer):
             enc_layers=enc_layers, ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
         self.d_model = d_model
+        self.nhead = nhead
         self.scoring_layers = scoring_layers
+        self.dropout = dropout
 
         # ======================================================
         # --- 1. ENCODER MLP (CATÁLOGO / INVENTARIO) ---
@@ -43,11 +45,14 @@ class CLPModelNoCont(Transformer):
         # --- 3. VECTOR CONSTANTE (reemplaza al contenedor enriquecido) ---
         self.const_token = nn.Parameter(torch.randn(1, 1, d_model))
 
-        # --- 4. DECODER: Acciones atienden al vector constante ---
-        self.cross_attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
-            for _ in range(scoring_layers)
-        ])
+        # --- 4. DECODER: W_o (W_v t_const + b_v) + b_o sumado a las acciones ---
+        self.value_proj_layers = nn.ModuleList()
+        self.out_proj_layers = nn.ModuleList()
+        for _ in range(scoring_layers):
+            value_proj, out_proj = build_single_key_attention(d_model, nhead, dropout)
+            self.value_proj_layers.append(value_proj)
+            self.out_proj_layers.append(out_proj)
+
         self.decoder_ff_layers = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(d_model, d_model * ff_dim_multiplier),
@@ -59,7 +64,6 @@ class CLPModelNoCont(Transformer):
         ])
         self.attn_dropout = nn.Dropout(dropout)
 
-        self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(scoring_layers)])
         self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(scoring_layers)])
         self.final_dec_norm = nn.LayerNorm(d_model)
 
@@ -88,13 +92,11 @@ class CLPModelNoCont(Transformer):
         # --- 2. Vector constante como key/value (sin información del contenedor) ---
         const = self.const_token.expand(B, -1, -1)
 
-        # --- 3. CROSS-ATTENTION: Acciones atienden al vector constante ---
+        # --- 3. SCORING: Contribución del vector constante sumada a las acciones ---
         for i in range(self.scoring_layers):
-            normed_queries = self.dec_norm1_layers[i](queries)
-            attn_output, _ = self.cross_attn_layers[i](
-                query=normed_queries,
-                key=const,
-                value=const
+            attn_output = single_key_attention(
+                self.value_proj_layers[i], self.out_proj_layers[i], const,
+                queries.shape[1], self.nhead, self.dropout, self.training
             )
             queries = queries + self.attn_dropout(attn_output)
 

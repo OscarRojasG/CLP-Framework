@@ -1,11 +1,16 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from models.base.transformer import Transformer
 
-# Variante de CLPMLPFix (Pre-LN) con los siguientes cambios:
-#   - El encoder de bloques es una MLP clásica de enc_layers capas (sin normalización ni conexión residual).
-#   - El contenedor se enriquece con cont_layers capas apiladas (cross-attention + FF, Pre-LN),
-#     siguiendo el mismo flujo que la atención entre acciones y contenedor (antes una sola atención).
+# Modelo propuesto:
+#   - El encoder de bloques es una MLP clásica de enc_layers capas aplicada a cada bloque por separado.
+#   - El contenedor se enriquece con cont_layers capas apiladas (cross-attention + FF, Pre-LN) sobre los bloques colocados.
+#   - En las capas de scoring, la atención de las acciones al contenedor tiene una sola key, por lo que el softmax
+#     siempre vale 1 y la salida es W_o (W_v t_c + b_v) + b_o. Se implementa así directamente, sin las proyecciones
+#     Q y K (que no recibirían gradiente). Se mantienen los factores W_v y W_o por separado y se replica el dropout
+#     que nn.MultiheadAttention aplica al peso de atención, de modo que el entrenamiento equivale al de la atención estándar.
+
 
 def build_mlp(in_dim, hidden_dim, out_dim, num_layers, dropout):
     """
@@ -22,10 +27,55 @@ def build_mlp(in_dim, hidden_dim, out_dim, num_layers, dropout):
     layers.append(nn.Dropout(dropout))
     return nn.Sequential(*layers)
 
+
+def build_single_key_attention(d_model, nhead, dropout):
+    """
+    Proyecciones V y de salida de una nn.MultiheadAttention, sin Q ni K.
+    Se construye una atención temporal (consumiendo el generador aleatorio igual que nn.MultiheadAttention)
+    y se copian sus proyecciones, por lo que con la misma semilla se obtienen los mismos pesos.
+    """
+    attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
+    value_proj = nn.utils.skip_init(nn.Linear, d_model, d_model)
+    out_proj = nn.utils.skip_init(nn.Linear, d_model, d_model)
+    with torch.no_grad():
+        value_proj.weight.copy_(attn.in_proj_weight[2 * d_model:])
+        value_proj.bias.copy_(attn.in_proj_bias[2 * d_model:])
+        out_proj.weight.copy_(attn.out_proj.weight)
+        out_proj.bias.copy_(attn.out_proj.bias)
+    return value_proj, out_proj
+
+
+def single_key_attention(value_proj, out_proj, key_value, num_queries, nhead, dropout, training):
+    """
+    Salida de nn.MultiheadAttention (batch_first) con una sola key: W_o (W_v kv + b_v) + b_o para cada query.
+    key_value: [B, 1, d_model]. Devuelve [B, num_queries, d_model].
+
+    En entrenamiento replica el dropout que nn.MultiheadAttention aplica al peso de atención (que vale 1),
+    que anula o reescala de forma independiente cada cabeza de cada query.
+    """
+    B, _, d_model = key_value.shape
+    values = value_proj(key_value)  # [B, 1, d_model]
+
+    if training and dropout > 0:
+        head_dim = d_model // nhead
+        # Mismo tensor (y mismo consumo del generador aleatorio) que el peso de atención de MultiheadAttention
+        head_weights = F.dropout(values.new_ones(B * nhead, num_queries, 1), p=dropout)
+        head_weights = head_weights.view(B, nhead, num_queries, 1)
+        values = values.view(B, 1, nhead, head_dim).transpose(1, 2)  # [B, nhead, 1, head_dim]
+        values = (head_weights * values).permute(2, 0, 1, 3).reshape(num_queries, B, d_model)
+
+        # Igual que MultiheadAttention con batch_first: la salida es una vista transpuesta de un tensor
+        # [num_queries, B, d_model]. El dropout posterior genera la máscara en el orden de la memoria, por lo que
+        # se mantiene esta disposición para obtener las mismas máscaras.
+        return out_proj(values).transpose(0, 1)
+
+    return out_proj(values.expand(B, num_queries, d_model))
+
+
 class CLPModel(Transformer):
     """
     El encoder de bloques es una MLP clásica aplicada a cada bloque por separado.
-    El decoder hace que las acciones candidato atiendan a un contenedor enriquecido.
+    En el decoder, cada capa suma a las acciones candidato W_o (W_v t_c + b_v) + b_o, con t_c el contenedor enriquecido.
     """
     def __init__(self, block_dim, action_dim, placed_dim, d_model=64, nhead=4, scoring_layers=3,
                  cont_layers=2, enc_layers=2, ff_dim_multiplier=3, dropout=0.1, seed=None):
@@ -37,8 +87,10 @@ class CLPModel(Transformer):
             ff_dim_multiplier=ff_dim_multiplier, dropout=dropout
         )
         self.d_model = d_model
+        self.nhead = nhead
         self.scoring_layers = scoring_layers
         self.cont_layers = cont_layers
+        self.dropout = dropout
 
         # ======================================================
         # --- 1. ENCODER MLP (CATÁLOGO / INVENTARIO) ---
@@ -86,11 +138,14 @@ class CLPModel(Transformer):
         # Normalización final del contenedor antes de usarlo como memoria del decoder
         self.container_norm = nn.LayerNorm(d_model)
 
-        # --- 4. DECODER: Acciones atienden al Contenedor ---
-        self.cross_attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True)
-            for _ in range(scoring_layers)
-        ])
+        # --- 4. DECODER: W_o (W_v t_c + b_v) + b_o sumado a las acciones ---
+        self.value_proj_layers = nn.ModuleList()
+        self.out_proj_layers = nn.ModuleList()
+        for _ in range(scoring_layers):
+            value_proj, out_proj = build_single_key_attention(d_model, nhead, dropout)
+            self.value_proj_layers.append(value_proj)
+            self.out_proj_layers.append(out_proj)
+
         self.decoder_ff_layers = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(d_model, d_model * ff_dim_multiplier),
@@ -102,7 +157,6 @@ class CLPModel(Transformer):
         ])
         self.attn_dropout = nn.Dropout(dropout)
 
-        self.dec_norm1_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(scoring_layers)])
         self.dec_norm2_layers = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(scoring_layers)])
         self.final_dec_norm = nn.LayerNorm(d_model)
 
@@ -153,14 +207,11 @@ class CLPModel(Transformer):
 
         container_enriched = self.container_norm(container)
 
-        # --- 3. CROSS-ATTENTION: Acciones atienden al Contenedor ---
+        # --- 3. SCORING: Contribución del contenedor sumada a las acciones ---
         for i in range(self.scoring_layers):
-            normed_queries = self.dec_norm1_layers[i](queries)
-            # Acciones (Q) atienden al contenedor (K, V)
-            attn_output, _ = self.cross_attn_layers[i](
-                query=normed_queries,
-                key=container_enriched,
-                value=container_enriched
+            attn_output = single_key_attention(
+                self.value_proj_layers[i], self.out_proj_layers[i], container_enriched,
+                queries.shape[1], self.nhead, self.dropout, self.training
             )
             queries = queries + self.attn_dropout(attn_output)
 

@@ -1,12 +1,12 @@
 import subprocess
-from settings import BSG_SOLVER_PATH, BSG_FIXED_W_SOLVER_PATH, INSTANCE_FOLDER
+from settings import BSG_VCS_PATH, BSG_VCS_FIXED_W_PATH, INSTANCE_FOLDER
 from solvers.solver import Solver
 
 class BSG_VCS_Solver(Solver):
     def __init__(self, w, min_fr, fixed_w=False):
         super().__init__("BSG", min_fr)
         self.w = w
-        self.solver_path = BSG_FIXED_W_SOLVER_PATH if fixed_w else BSG_SOLVER_PATH
+        self.solver_path = BSG_VCS_FIXED_W_PATH if fixed_w else BSG_VCS_PATH
 
     def solve(self, instance_file, instance_number) -> int:
         # Ejecutar el proceso y capturar la salida

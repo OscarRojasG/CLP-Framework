@@ -1,32 +1,26 @@
 """
-Analiza carpetas con archivos .out (salida de run_instances_parallel) y simula
-los descartes de generate_data y el particionado por rangos de generate_datasets,
-sin construir ningún dataset.
+Data generation statistics of an instance set (discarded samples and difficulty levels), as reported in the paper:
+    python analyze_discards.py M3
 
-Uso: ajustar los parámetros de configuración y ejecutar
-    python scripts/analyze_discards.py
+Reads the .out files produced by run_instances_parallel and simulates the filters of generate_data and the
+rank-based split of generate_datasets, without building any dataset.
 """
+import argparse
 import os
 from concurrent.futures import ProcessPoolExecutor
+from generate_data import SETS, FIRST_SEED, MIN_BLOCKS, MIN_ACTIONS, MAX_ACTIONS, CUTS
 from settings import OUTPUT_FOLDER
 
-# ─── Parámetros de configuración ───────────────────────────────────────────────
-FOLDERS = ["E15-42", "E15-43", "E15-44"]  # Subcarpetas de OUTPUT_FOLDER a analizar
-MIN_BLOCKS = 100
-MIN_ACTIONS = 4
-MAX_ACTIONS = 64
-CUTS = [1, 1, 8, 64]
 MAX_WORKERS = None
-# ───────────────────────────────────────────────────────────────────────────────
 
-NOT_FOUND = 999999  # Mismo valor que get_rank cuando el bloque no está en las acciones
+NOT_FOUND = 999999  # Same value as get_rank when the block is not among the actions
 
 
 def read_steps(filepath):
     """
-    Versión ligera de data.generation.read_output: recorre el archivo con la
-    misma estructura, pero solo extrae lo necesario para los filtros.
-    Retorna (n_blocks, [(n_actions, rank), ...]).
+    Lightweight version of data.generation.read_output: walks the file with the same structure,
+    but only extracts what the filters need.
+    Returns (n_blocks, [(n_actions, rank), ...]).
     """
     with open(filepath, "r") as f:
         lines = [line.strip() for line in f if line.strip()]
@@ -57,7 +51,7 @@ def read_steps(filepath):
             if l == "Space":
                 break
 
-        next(it)  # Datos de Space
+        next(it)  # Space data
         next(it)  # "Selected Block"
         selected_block = int(next(it))
 
@@ -65,7 +59,7 @@ def read_steps(filepath):
         for l in it:
             if l == "Volume":
                 break
-        next(it)  # Volumen actual
+        next(it)  # Current volume
 
         try:
             rank = action_ids.index(selected_block)
@@ -106,7 +100,7 @@ def analyze_file(filepath, min_blocks, min_actions, max_actions, cuts_ranges):
             continue
 
         stats["valid"] += 1
-        # Mismo criterio que split_data: start_cut - 1 <= rank <= end_cut - 1
+        # Same criterion as split_data: start_cut - 1 <= rank <= end_cut - 1
         for j, (start_cut, end_cut) in enumerate(cuts_ranges):
             if start_cut - 1 <= rank <= end_cut - 1:
                 stats["cuts"][j] += 1
@@ -132,7 +126,7 @@ def empty_stats(n_cuts):
 
 
 def build_cut_ranges(cuts):
-    # Mismo criterio que generate_datasets
+    # Same criterion as generate_datasets
     return [(cuts[j] if j == 0 else cuts[j] + 1, cuts[j + 1]) for j in range(len(cuts) - 1)]
 
 
@@ -147,38 +141,34 @@ def print_report(name, s, cuts_ranges):
         print(f"{' ' * indent}{label:<48}{value:>10}  {pct(value, ref)}")
 
     print(f"\n═══ {name} ═══")
-    print(f"  {'Instancias procesadas':<48}{s['instances']:>10}")
-    print(f"  {'Datos totales iniciales':<48}{total:>10}")
-    row(f"Descartados por min_blocks (< {MIN_BLOCKS})", s["min_blocks"], total)
-    row(f"Descartados por rank >= max_actions ({MAX_ACTIONS})", s["rank"], total)
-    row(f"Descartados por min_actions (< {MIN_ACTIONS})", s["min_actions"], total)
-    row("Descartados (unión de las 3 condiciones)", s["union"], total)
-    row("Datos válidos", valid, total)
+    print(f"  {'Instances processed':<48}{s['instances']:>10}")
+    print(f"  {'Total initial samples':<48}{total:>10}")
+    row(f"Discarded by min_blocks (< {MIN_BLOCKS})", s["min_blocks"], total)
+    row(f"Discarded by rank >= max_actions ({MAX_ACTIONS})", s["rank"], total)
+    row(f"Discarded by min_actions (< {MIN_ACTIONS})", s["min_actions"], total)
+    row("Total discarded (union of the 3 conditions)", s["union"], total)
+    row("Valid samples", valid, total)
 
-    print(f"  Distribución de válidos por rango del ranking (cuts={CUTS}):")
+    print(f"  Valid samples by rank range (cuts={CUTS}):")
     for (start, end), count in zip(cuts_ranges, s["cuts"]):
         row(f"[{start}, {end}]", count, valid, indent=4)
     if s["out_of_cuts"]:
-        row("fuera de los cortes", s["out_of_cuts"], valid, indent=4)
+        row("outside the cuts", s["out_of_cuts"], valid, indent=4)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Data generation statistics of an instance set.")
+    parser.add_argument("set", choices=list(SETS))
+    args = parser.parse_args()
+
+    n_files = SETS[args.set][2]
+    folders = [f"{args.set}-{seed}" for seed in range(FIRST_SEED, FIRST_SEED + n_files)]
     cuts_ranges = build_cut_ranges(CUTS)
 
     groups = {}
-    for folder in FOLDERS:
+    for folder in folders:
         folder_path = OUTPUT_FOLDER / folder
-        if not folder_path.is_dir():
-            print(f"Carpeta no encontrada: {folder_path}")
-            continue
-        outs = sorted(f for f in os.listdir(folder_path) if f.endswith(".out"))
-        if not outs:
-            print(f"Sin archivos .out: {folder_path}")
-            continue
-        groups[folder] = [str(folder_path / f) for f in outs]
-
-    if not groups:
-        return
+        groups[folder] = [str(folder_path / f) for f in sorted(os.listdir(folder_path)) if f.endswith(".out")]
 
     total_stats = empty_stats(len(cuts_ranges))
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -193,11 +183,11 @@ def main():
             folder_stats = empty_stats(len(cuts_ranges))
             for r in results:
                 merge(folder_stats, r)
-            print_report(f"{name} ({n} archivos)", folder_stats, cuts_ranges)
+            print_report(f"{name} ({n} files)", folder_stats, cuts_ranges)
             merge(total_stats, folder_stats)
 
     if len(groups) > 1:
-        print_report(f"TOTAL ({len(groups)} carpetas)", total_stats, cuts_ranges)
+        print_report(f"TOTAL ({len(groups)} folders)", total_stats, cuts_ranges)
 
 
 if __name__ == "__main__":

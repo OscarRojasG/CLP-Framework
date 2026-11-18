@@ -1,5 +1,5 @@
 import subprocess
-from settings import VCS_SOLVER_PATH, INSTANCE_FOLDER
+from settings import VCS_PATH, INSTANCE_FOLDER
 from solvers.solver import Solver
 
 class VCSSolver(Solver):
@@ -9,7 +9,7 @@ class VCSSolver(Solver):
     def solve(self, instance_file, instance_number):
         # Ejecutar el proceso y capturar la salida
         proc = subprocess.run(
-            [VCS_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), f"--min_fr={self.min_fr}"],
+            [VCS_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), f"--min_fr={self.min_fr}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,

@@ -1,5 +1,5 @@
 import subprocess
-from settings import BSG_SOLVER_PATH, INSTANCE_FOLDER
+from settings import BSG_VCS_PATH, INSTANCE_FOLDER
 from solvers.solver import Solver
 
 class DE_BSG_VCS_Solver(Solver):
@@ -8,9 +8,9 @@ class DE_BSG_VCS_Solver(Solver):
         self.timelimit = timelimit
 
     def solve(self, instance_file, instance_number) -> int:
-        # Con -t, BSG_CLP ejecuta DoubleEffort (w inicial 4) hasta alcanzar el tiempo límite
+        # Con -t, BSG_VCS ejecuta DoubleEffort (w inicial 4) hasta alcanzar el tiempo límite
         proc = subprocess.run(
-            [BSG_SOLVER_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-t", str(self.timelimit), f"--min_fr={self.min_fr}"],
+            [BSG_VCS_PATH, INSTANCE_FOLDER / instance_file, "-i", str(instance_number), "-t", str(self.timelimit), f"--min_fr={self.min_fr}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,

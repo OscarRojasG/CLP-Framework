@@ -218,22 +218,15 @@ __marimo__/
 # Extra
 data/**
 instances/**
-models/**
 outputs/**
 stats/**
-experiments/**
-
-notebooks/testing
 
 !instances/benchmarks/
 !instances/benchmarks/**
-!src/*.so
-!src/envs/*
+!instances/val/
+!instances/val/**
 
-!models/M3.pth
-!models/M30.pth
-!models/M100.pth
-!models/hyperparams
-!models/hyperparams/M3.json
-!models/hyperparams/M30.json
-!models/hyperparams/M100.json
+# Binarios compilados (ver README)
+bin/
+src/envs/*.so
+*.egg-info/

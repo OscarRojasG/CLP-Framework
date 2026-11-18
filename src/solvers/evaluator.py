@@ -160,6 +160,7 @@ def fast_eval(solvers_config, instance_file, num_instances, model_cls=None, mode
     # Guardar todos los resultados al final si se solicitó
     if output_csv:
         output_path = EXPERIMENTS_FOLDER / output_csv
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         df_results.to_csv(output_path, index=False)
         print(f"\nResultados guardados exitosamente en: {output_path}")
 
